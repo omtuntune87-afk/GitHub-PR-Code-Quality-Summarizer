@@ -31,6 +31,7 @@ class LLMResponse:
     model: str
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    finish_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -72,7 +73,8 @@ def _error_message(response: httpx.Response) -> str:
     return text[:500] if text else response.reason_phrase or f"HTTP {response.status_code}"
 
 
-def _extract_content(payload: object) -> str:
+def _extract_choice(payload: object) -> tuple[str, str | None]:
+    """Return the content and finish reason from the first choice."""
     if not isinstance(payload, dict):
         raise LLMError("LLM returned an unexpected response payload.")
     choices = payload.get("choices")
@@ -91,9 +93,20 @@ def _extract_content(payload: object) -> str:
             if isinstance(part, dict) and isinstance(part.get("text"), str):
                 parts.append(part["text"])
         content = "".join(parts)
-    if not isinstance(content, str) or not content.strip():
-        raise LLMError("LLM returned an empty response.")
-    return content
+    if not isinstance(content, str):
+        raise LLMError("LLM response did not contain text content.")
+    finish_reason = first.get("finish_reason")
+    if not isinstance(finish_reason, str) or not finish_reason:
+        finish_reason = None
+    return content, finish_reason
+
+
+def _is_truncated(finish_reason: str | None) -> bool:
+    return finish_reason is not None and finish_reason.lower() in {
+        "length",
+        "max_tokens",
+        "max_output_tokens",
+    }
 
 
 class LLMClient:
@@ -168,7 +181,16 @@ class LLMClient:
         except ValueError as exc:
             raise LLMError("LLM returned invalid JSON.") from exc
 
-        content = _extract_content(data)
+        content, finish_reason = _extract_choice(data)
+        if _is_truncated(finish_reason):
+            raise LLMError(
+                "LLM response was truncated at the token limit "
+                f"(finish_reason={finish_reason!r}); refusing to present or post "
+                "an incomplete review. Increase --max-tokens or "
+                "PR_LENS_MAX_TOKENS."
+            )
+        if not content.strip():
+            raise LLMError("LLM returned an empty response.")
         usage = data.get("usage") if isinstance(data, dict) else None
         usage = usage if isinstance(usage, dict) else {}
         response_model = data.get("model") if isinstance(data, dict) else None
@@ -177,6 +199,7 @@ class LLMClient:
             model=str(response_model or model or self.model),
             prompt_tokens=_as_int(usage.get("prompt_tokens")),
             completion_tokens=_as_int(usage.get("completion_tokens")),
+            finish_reason=finish_reason,
         )
 
 

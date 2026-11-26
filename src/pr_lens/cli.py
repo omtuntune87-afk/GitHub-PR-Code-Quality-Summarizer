@@ -99,9 +99,8 @@ def cli() -> None:
 @click.option(
     "--max-tokens",
     type=click.IntRange(min=1, max=100_000),
-    default=DEFAULT_MAX_TOKENS,
-    show_default=True,
-    help="Maximum tokens in the model response.",
+    default=None,
+    help="Maximum tokens in the model response (env: PR_LENS_MAX_TOKENS).",
 )
 @click.option("--no-footer", is_flag=True, help="Omit the generated-by footer.")
 def review(
@@ -114,7 +113,7 @@ def review(
     max_diff_chars: int | None,
     max_comment_chars: int | None,
     temperature: float,
-    max_tokens: int,
+    max_tokens: int | None,
     no_footer: bool,
 ) -> None:
     """Review TARGET, which is OWNER/REPO plus NUMBER or a pull request URL."""
@@ -150,6 +149,7 @@ def review(
     resolved_max_comment = max_comment_chars or _env_int(
         "PR_LENS_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS
     )
+    resolved_max_tokens = max_tokens or _env_int("PR_LENS_MAX_TOKENS", DEFAULT_MAX_TOKENS)
     if resolved_max_comment > GITHUB_COMMENT_LIMIT:
         raise click.ClickException(
             f"PR_LENS_MAX_COMMENT_CHARS must not exceed {GITHUB_COMMENT_LIMIT}."
@@ -182,7 +182,7 @@ def review(
                 base_url=resolved_base_url,
                 model=resolved_model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=resolved_max_tokens,
             ) as llm:
                 result = review_diff(
                     pull_request,

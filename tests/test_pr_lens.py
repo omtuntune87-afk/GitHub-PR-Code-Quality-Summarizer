@@ -585,6 +585,67 @@ def test_llm_complete_parses_response() -> None:
     assert response.model == "test-model-2024"
     assert response.prompt_tokens == 12
     assert response.completion_tokens == 5
+    assert response.finish_reason is None
+
+
+def test_llm_rejects_length_truncated_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": "## Summary\npartial review"},
+                        "finish_reason": "length",
+                    }
+                ]
+            },
+        )
+
+    with (
+        LLMClient("secret", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(LLMError, match="truncated"),
+    ):
+        client.complete("system", "user")
+
+
+def test_llm_rejects_max_tokens_truncated_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": "partial review"},
+                        "finish_reason": "MAX_TOKENS",
+                    }
+                ]
+            },
+        )
+
+    with (
+        LLMClient("secret", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(LLMError, match="token limit"),
+    ):
+        client.complete("system", "user")
+
+
+def test_llm_accepts_stop_finish_reason() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "complete review"}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    with LLMClient("secret", transport=httpx.MockTransport(handler)) as client:
+        response = client.complete("system", "user")
+
+    assert response.content == "complete review"
+    assert response.finish_reason == "stop"
 
 
 def test_llm_accepts_content_parts() -> None:
@@ -733,6 +794,7 @@ class FakeLLMClient:
         self.api_key = args[0] if args else None
         self.model = kwargs.get("model")
         self.base_url = kwargs.get("base_url")
+        self.max_tokens = kwargs.get("max_tokens")
         self.next_error: Exception | None = None
 
     def __enter__(self) -> FakeLLMClient:
@@ -766,6 +828,7 @@ def fake_clients(monkeypatch: pytest.MonkeyPatch) -> tuple[FakeGitHubClient, Fak
         llm.api_key = args[0] if args else None
         llm.model = kwargs.get("model")
         llm.base_url = kwargs.get("base_url")
+        llm.max_tokens = kwargs.get("max_tokens")
         return llm
 
     monkeypatch.setattr(cli_module, "GitHubClient", github_factory)
@@ -789,6 +852,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "PR_LENS_LLM_BASE_URL",
         "PR_LENS_MAX_DIFF_CHARS",
         "PR_LENS_MAX_COMMENT_CHARS",
+        "PR_LENS_MAX_TOKENS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -832,6 +896,46 @@ def test_cli_uses_model_and_base_url_env(
     assert llm.model == "env-model"
     assert llm.base_url == "https://env.example/v1"
     assert github.token is None
+
+
+def test_cli_uses_max_tokens_env(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, llm = fake_clients
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_MAX_TOKENS", "1234")
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
+    assert result.exit_code == 0, result.output
+    assert llm.max_tokens == 1234
+
+
+def test_cli_max_tokens_option_overrides_env(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, llm = fake_clients
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_MAX_TOKENS", "1234")
+    result = CliRunner().invoke(
+        cli_command, ["review", "octo/demo", "7", "--max-tokens", "500"]
+    )
+    assert result.exit_code == 0, result.output
+    assert llm.max_tokens == 500
+
+
+def test_cli_rejects_invalid_max_tokens_env(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_MAX_TOKENS", "not-a-number")
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
+    assert result.exit_code == 1
+    assert "PR_LENS_MAX_TOKENS" in result.output
 
 
 def test_cli_posts_comment(
