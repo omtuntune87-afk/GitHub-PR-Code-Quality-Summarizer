@@ -27,14 +27,6 @@ DEFAULT_EXCLUDED_PATTERNS = (
     "*.min.mjs",
     "*.min.css",
     "*.map",
-    "dist/**",
-    "build/**",
-    "node_modules/**",
-    "vendor/**",
-    "coverage/**",
-    "site-packages/**",
-    "generated/**",
-    "*.generated.*",
     "*.pb.go",
     "*_pb2.py",
     "*.pyc",
@@ -42,6 +34,9 @@ DEFAULT_EXCLUDED_PATTERNS = (
     "*.jar",
     "*.woff",
     "*.woff2",
+    "*.ttf",
+    "*.eot",
+    "*.snap",
 )
 
 SYSTEM_PROMPT = """\
@@ -190,27 +185,21 @@ def _matches_exclude(path: str, pattern: str) -> bool:
 
 
 def _is_excluded(file: FileDiff, extra_patterns: tuple[str, ...]) -> bool:
-    """Return true for lockfiles, minified assets, generated files, or custom patterns."""
-    paths = [value for value in (file.old_path, file.new_path, file.path) if value]
-    patterns = (*DEFAULT_EXCLUDED_PATTERNS, *extra_patterns)
-    if any(_matches_exclude(path, pattern) for path in paths for pattern in patterns):
-        return True
+    """Return true only when every known path matches an exclusion pattern.
 
-    comment_prefixes = ("#", "//", "/*", "<!--", "--")
-    for hunk in file.hunks[:1]:
-        for line in hunk.lines[:10]:
-            stripped = line.content.strip()
-            lowered = stripped.lower()
-            generated_header = (
-                "code generated" in lowered or "auto-generated" in lowered
-            ) and "do not edit" in lowered
-            if (
-                line.kind == "addition"
-                and stripped.startswith(comment_prefixes)
-                and generated_header
-            ):
-                return True
-    return False
+    Both sides of a rename must match before a file is hidden. That prevents a
+    hand-written source file from disappearing when it is renamed to a path
+    that happens to match a built-in or configured exclusion.
+    """
+    paths = tuple(
+        dict.fromkeys(value for value in (file.old_path, file.new_path, file.path) if value)
+    )
+    if not paths:
+        return False
+    patterns = (*DEFAULT_EXCLUDED_PATTERNS, *extra_patterns)
+    return all(
+        any(_matches_exclude(path, pattern) for pattern in patterns) for path in paths
+    )
 
 
 def _split_diff_blocks(diff_text: str) -> list[str]:
@@ -236,7 +225,7 @@ def filter_reviewable_files(
     parsed: ParsedDiff,
     extra_excludes: tuple[str, ...] = (),
 ) -> FilteredDiff:
-    """Remove lockfiles, minified assets, generated files, and custom paths."""
+    """Remove noisy paths and custom exclusions from a parsed diff."""
     blocks = _split_diff_blocks(diff_text)
     included_files = []
     included_blocks: list[str] = []

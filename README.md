@@ -13,8 +13,8 @@ the result back to the pull request as a Markdown comment.
 - Retries rate limits (429), temporary server errors (5xx), and timeouts with
   capped exponential backoff and `Retry-After` support.
 - Updates its own hidden-marked comment instead of posting duplicates.
-- Excludes lockfiles, minified files, generated files, and custom paths from
-  the prompt, then reports what was skipped.
+- Excludes lockfiles, minified assets, and custom paths from the prompt, then
+  reports what was skipped.
 - Includes a validated AI quality estimate with a verdict, 1-5 score, and short
   reasons.
 - Truncates very large diffs at file boundaries so prompts stay within budget.
@@ -66,9 +66,9 @@ over environment variables.
 
 Built-in exclusions cover common lockfiles (`package-lock.json`, `yarn.lock`,
 `Cargo.lock`, `poetry.lock`, `uv.lock`, and others), minified assets
-(`*.min.js`, `*.min.css`, source maps), and generated locations such as `dist/`,
-`build/`, `node_modules/`, `vendor/`, and `generated/**`. Files that begin with
-a generated-code header such as `// Code generated ... DO NOT EDIT` are also
+(`*.min.js`, `*.min.css`, source maps), and known generated-file extensions such
+as `*.pb.go` and `*_pb2.py`. Diff content is never used to exclude a file. For
+renames, both the old and new path must match an exclusion before the file is
 skipped. `PR_LENS_EXCLUDE` adds patterns; it does not disable the built-ins.
 
 GitHub tokens need `pull-requests: write` (or `issues: write` for the comment
