@@ -29,8 +29,13 @@ _RATING_ONLY_RE = re.compile(
     rf"(?:\s*(?:[|,;:·\\-]+|\band\b)\s*{_RATING_VALUE})*$",
     re.IGNORECASE,
 )
+_RATING_PREFIX_RE = re.compile(r"^(?:>\s*|(?:[-+*]|\d+[.)])\s+|#{1,6}\s+)+")
+_EMPHASIZED_LABEL_AFTER_COLON_RE = re.compile(r"^([*_]{1,3})(.+?):\1\s*")
+_EMPHASIZED_LABEL_BEFORE_COLON_RE = re.compile(r"^([*_]{1,3})(.+?)\1\s*:")
 
-_MARKDOWN = MarkdownIt()
+# GitHub tables split cells at unescaped pipes even inside backticks, so code
+# detection must use table-aware parsing to avoid hiding untrusted cell text.
+_MARKDOWN = MarkdownIt("default").disable("linkify")
 _ORIGINAL_BACKTICK_RULE = next(
     rule.fn for rule in _MARKDOWN.inline.ruler.__rules__ if rule.name == "backticks"
 )
@@ -255,19 +260,31 @@ def _safe_inline(value: str) -> str:
     return f"`{_sanitize(value).replace('`', "'")}`"
 
 
+def _normalize_rating_line(line: str) -> str:
+    candidate = line.strip()
+    while True:
+        stripped = _RATING_PREFIX_RE.sub("", candidate, count=1)
+        if stripped == candidate:
+            break
+        candidate = stripped
+    for pattern in (
+        _EMPHASIZED_LABEL_AFTER_COLON_RE,
+        _EMPHASIZED_LABEL_BEFORE_COLON_RE,
+    ):
+        stripped = pattern.sub(r"\2: ", candidate)
+        if stripped != candidate:
+            return stripped
+    return candidate
+
+
 def _is_explicit_rating_line(line: str) -> bool:
     """Return true only for a declared or rating-only line, not a finding."""
-    stripped = line.strip()
-    if _RATING_LABEL_RE.match(stripped):
+    normalized = _normalize_rating_line(line)
+    if _RATING_LABEL_RE.match(normalized):
         return True
 
-    candidate = stripped
-    if candidate.startswith(("-", "*")):
-        candidate = candidate[1:].lstrip()
-    candidate = candidate.strip().strip("*_`").strip().rstrip(".!").strip()
-    if not candidate:
-        return False
-    return bool(_RATING_ONLY_RE.fullmatch(candidate))
+    candidate = normalized.strip().strip("*_`").strip().rstrip(".!").strip()
+    return bool(candidate) and bool(_RATING_ONLY_RE.fullmatch(candidate))
 
 
 def _remove_rating_lines(content: str) -> str:

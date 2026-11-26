@@ -646,6 +646,39 @@ def test_partial_review_removes_only_explicit_rating_declarations(
     assert "Finding: needs attention when the timeout is reached." in comment
 
 
+def test_partial_review_removes_decorated_rating_declarations(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    review_result.diff_truncated = True
+    review_result.quality = QualityEstimate("Looks good", 5, "Small, tested change.")
+    declarations = (
+        "**Verdict:** Looks good",
+        "*Rating:* 5/5",
+        "_Score:_ 5/5",
+        "## AI estimate: Looks good | 4/5 | Repeated",
+        "> Verdict: Looks good",
+        "- **Score:** 5/5",
+        "> - _Rating:_ High risk",
+        "### **AI estimate:** Needs attention",
+    )
+    findings = (
+        "- **Blocker:** SQL injection in `db.py` is a high risk.",
+        "The new log looks good but leaks the password.",
+        "Fraction 3/5 appears in the metrics.",
+        "Finding: needs attention when the timeout is reached.",
+    )
+    review_result.content = "\n".join((*declarations, *findings))
+
+    comment = format_review(review_result, pull_request)
+
+    assert "**Partial review:**" in comment
+    assert "> Not rated (partial review; ratings are disabled)." in comment
+    for declaration in declarations:
+        assert declaration not in comment
+    for finding in findings:
+        assert finding in comment
+
+
 def test_format_no_review_has_no_rating(pull_request: PullRequest) -> None:
     comment = format_no_review(pull_request, ["new.txt", "package-lock.json"])
 
@@ -726,6 +759,24 @@ def test_sanitize_preserves_valid_code_and_escapes_outside() -> None:
     assert "&lt;b&gt;end&lt;/b&gt;" in sanitized
     assert PR_LENS_COMMENT_MARKER not in sanitized
     assert "<!--\u200bpr-lens:review-comment -->" in sanitized
+
+
+def test_sanitize_table_cells_with_pipes_are_not_treated_as_code() -> None:
+    raw = (
+        "| file | note |\n"
+        "| --- | --- |\n"
+        "| `x|@bob` | `<b>tag</b>` |\n"
+        "| `x < y` | @carol |"
+    )
+
+    sanitized = _sanitize(raw)
+
+    assert "@\u200bbob" in sanitized
+    assert "&lt;b&gt;tag&lt;/b&gt;" in sanitized
+    assert "@\u200bcarol" in sanitized
+    assert "`x|@bob`" not in sanitized
+    assert "`x < y`" in sanitized
+    assert _sanitize("`x|@bob`") == "`x|@bob`"
 
 
 def test_sanitize_escapes_unmatched_backticks() -> None:
