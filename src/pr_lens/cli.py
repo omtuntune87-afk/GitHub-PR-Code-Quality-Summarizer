@@ -30,7 +30,7 @@ from pr_lens.llm_engine import (
     LLMError,
     review_diff,
 )
-from pr_lens.prompts import DEFAULT_MAX_DIFF_CHARS
+from pr_lens.prompts import DEFAULT_MAX_DIFF_CHARS, filter_reviewable_files
 
 GITHUB_COMMENT_LIMIT = 65_000
 
@@ -41,6 +41,14 @@ def _env(primary: str, *fallbacks: str, default: str | None = None) -> str | Non
         if value and value.strip():
             return value.strip()
     return default
+
+
+def _excludes(values: tuple[str, ...]) -> tuple[str, ...]:
+    raw = list(values)
+    configured = _env("PR_LENS_EXCLUDE")
+    if configured:
+        raw.extend(configured.split(","))
+    return tuple(item.strip() for item in raw if item.strip())
 
 
 def _env_int(name: str, default: int) -> int:
@@ -108,6 +116,15 @@ def cli() -> None:
     help="Maximum tokens in the model response (env: PR_LENS_MAX_TOKENS).",
 )
 @click.option(
+    "--exclude",
+    "excludes",
+    multiple=True,
+    help=(
+        "Additional file glob to exclude from review; repeatable or comma-separated "
+        "(env: PR_LENS_EXCLUDE)."
+    ),
+)
+@click.option(
     "--comment-author",
     default=None,
     help=(
@@ -127,6 +144,7 @@ def review(
     max_comment_chars: int | None,
     temperature: float,
     max_tokens: int | None,
+    excludes: tuple[str, ...],
     comment_author: str | None,
     no_footer: bool,
 ) -> None:
@@ -164,6 +182,7 @@ def review(
         "PR_LENS_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS
     )
     resolved_max_tokens = max_tokens or _env_int("PR_LENS_MAX_TOKENS", DEFAULT_MAX_TOKENS)
+    resolved_excludes = _excludes(excludes)
     resolved_comment_author = (
         comment_author
         or _env("PR_LENS_COMMENT_AUTHOR", default=DEFAULT_COMMENT_AUTHOR)
@@ -191,9 +210,17 @@ def review(
                     f"GitHub returned an empty diff for {repository}#{pr_number}."
                 )
 
+            filtered = filter_reviewable_files(diff_text, parsed, resolved_excludes)
+            if filtered.parsed.is_empty:
+                click.echo(
+                    "No reviewable files remained after exclusions; skipping LLM review.",
+                    err=True,
+                )
+                return
+
             click.echo(
-                f"Reviewing {parsed.changed_files} file(s) "
-                f"({parsed.summary_line()}) with {resolved_model}...",
+                f"Reviewing {filtered.parsed.changed_files} of {parsed.changed_files} file(s) "
+                f"with {resolved_model}...",
                 err=True,
             )
             with LLMClient(
@@ -205,10 +232,11 @@ def review(
             ) as llm:
                 result = review_diff(
                     pull_request,
-                    parsed,
-                    diff_text,
+                    filtered.parsed,
+                    filtered.diff_text,
                     llm,
                     max_diff_chars=resolved_max_diff,
+                    skipped_files=tuple(filtered.skipped_files),
                 )
 
             comment = format_review(

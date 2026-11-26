@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
@@ -47,6 +47,7 @@ class ReviewResult:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     diff_truncated: bool = False
+    skipped_files: list[str] = field(default_factory=list)
 
 
 def _as_int(value: object) -> int | None:
@@ -280,6 +281,7 @@ def review_diff(
     *,
     max_diff_chars: int = 60_000,
     max_description_chars: int = 4_000,
+    skipped_files: tuple[str, ...] = (),
 ) -> ReviewResult:
     """Build prompts, ask the model for a review, and return the result."""
     bundle: PromptBundle = build_prompt_bundle(
@@ -288,6 +290,7 @@ def review_diff(
         diff_text,
         max_diff_chars=max_diff_chars,
         max_description_chars=max_description_chars,
+        skipped_files=skipped_files,
     )
     response = client.complete(bundle.system, bundle.user)
     return ReviewResult(
@@ -296,4 +299,5 @@ def review_diff(
         prompt_tokens=response.prompt_tokens,
         completion_tokens=response.completion_tokens,
         diff_truncated=bundle.truncated,
+        skipped_files=list(skipped_files),
     )

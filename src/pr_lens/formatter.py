@@ -81,6 +81,13 @@ def format_review(
                 "> The diff was truncated before review; findings may be incomplete.",
             ]
         )
+    if result.skipped_files:
+        lines.extend(["", "> [!NOTE]", "> Skipped files (excluded from this review):"])
+        for path in result.skipped_files[:20]:
+            lines.append(f"> - `{path.replace('`', "'")}`")
+        remaining = len(result.skipped_files) - 20
+        if remaining > 0:
+            lines.append(f"> - ...and {remaining} more file(s)")
     lines.extend(["", "---", "", content])
 
     if include_footer:
