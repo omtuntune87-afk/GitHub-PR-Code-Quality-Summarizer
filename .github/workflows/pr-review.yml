@@ -36,7 +36,7 @@ jobs:
       - name: Review pull request
         env:
           PR_LENS_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_LENS_LLM_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PR_LENS_LLM_API_KEY: ${{ secrets.PR_LENS_LLM_API_KEY }}
           PR_LENS_LLM_BASE_URL: ${{ vars.PR_LENS_LLM_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai/' }}
           PR_LENS_LLM_MODEL: ${{ vars.PR_LENS_LLM_MODEL || 'gemini-3.5-flash-lite' }}
           PR_LENS_MAX_TOKENS: ${{ vars.PR_LENS_MAX_TOKENS || '2000' }}

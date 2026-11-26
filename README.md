@@ -153,7 +153,7 @@ review. Configure these repository secrets:
 
 | Secret | Required | Purpose |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | Yes | Gemini API key passed as `PR_LENS_LLM_API_KEY` |
+| `PR_LENS_LLM_API_KEY` | Yes | Gemini API key passed directly to pr-lens |
 | `GITHUB_TOKEN` | Automatic | Built-in token used for the comment; do not create it manually |
 
 Optional repository variables:
