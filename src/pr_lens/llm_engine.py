@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,6 +39,15 @@ class LLMResponse:
     finish_reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class QualityEstimate:
+    """A validated AI-generated quality estimate."""
+
+    verdict: str
+    score: int
+    reasons: str
+
+
 @dataclass(slots=True)
 class ReviewResult:
     """A formatted-agnostic review ready for output."""
@@ -48,6 +58,17 @@ class ReviewResult:
     completion_tokens: int | None = None
     diff_truncated: bool = False
     skipped_files: list[str] = field(default_factory=list)
+    quality: QualityEstimate | None = None
+
+
+VALID_VERDICTS = ("Looks good", "Needs attention", "High risk")
+_QUALITY_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?AI\s*estimate\s*:\s*"
+    r"(?P<verdict>[^|]+?)\s*\|\s*"
+    r"(?P<score>\d+)\s*(?:/\s*5)?\s*\|\s*"
+    r"(?P<reasons>.+?)\s*$",
+    re.IGNORECASE,
+)
 
 
 def _as_int(value: object) -> int | None:
@@ -112,6 +133,44 @@ def _is_truncated(finish_reason: str | None) -> bool:
         "max_tokens",
         "max_output_tokens",
     }
+
+
+def parse_quality_estimate(content: str) -> tuple[str, QualityEstimate | None]:
+    """Extract and validate the model's AI estimate line from review content."""
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
+        probe = line.strip().lstrip("-* ").strip()
+        if not probe.lower().startswith("ai estimate:"):
+            continue
+        cleaned = "\n".join(lines[:index] + lines[index + 1 :]).strip()
+        match = _QUALITY_LINE_RE.match(probe)
+        if match is None:
+            return cleaned, None
+
+        verdict_text = " ".join(match.group("verdict").split())
+        verdict = next(
+            (
+                allowed
+                for allowed in VALID_VERDICTS
+                if allowed.casefold() == verdict_text.casefold()
+            ),
+            None,
+        )
+        score = int(match.group("score"))
+        reason_lines = [match.group("reasons")]
+        end = index + 1
+        while end < len(lines):
+            following = lines[end].strip()
+            if not following or following.startswith("#"):
+                break
+            reason_lines.append(following)
+            end += 1
+        reasons = " ".join(" ".join(reason_lines).split())
+        if verdict is None or not 1 <= score <= 5 or not reasons:
+            return cleaned, None
+        cleaned = "\n".join(lines[:index] + lines[end:]).strip()
+        return cleaned, QualityEstimate(verdict=verdict, score=score, reasons=reasons[:300])
+    return content.strip(), None
 
 
 def _parse_retry_after(value: str) -> float | None:
@@ -293,11 +352,13 @@ def review_diff(
         skipped_files=skipped_files,
     )
     response = client.complete(bundle.system, bundle.user)
+    content, quality = parse_quality_estimate(response.content)
     return ReviewResult(
-        content=response.content,
+        content=content,
         model=response.model,
         prompt_tokens=response.prompt_tokens,
         completion_tokens=response.completion_tokens,
         diff_truncated=bundle.truncated,
         skipped_files=list(skipped_files),
+        quality=quality,
     )

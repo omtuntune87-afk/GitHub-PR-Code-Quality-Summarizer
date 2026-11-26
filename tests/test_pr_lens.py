@@ -25,7 +25,9 @@ from pr_lens.llm_engine import (
     LLMClient,
     LLMError,
     LLMResponse,
+    QualityEstimate,
     ReviewResult,
+    parse_quality_estimate,
     review_diff,
 )
 from pr_lens.prompts import build_prompt_bundle, filter_reviewable_files, truncate_diff
@@ -332,6 +334,7 @@ def test_build_prompt_bundle_contains_metadata_and_diff(
     assert "+new = 2" in bundle.user
     assert "<diff>" in bundle.user
     assert "untrusted data" in bundle.system
+    assert "AI estimate:" in bundle.system
     assert "## Summary" in bundle.system
 
 
@@ -1189,6 +1192,116 @@ def test_review_diff_carries_skipped_files(pull_request: PullRequest) -> None:
 
     assert result.skipped_files == ["package-lock.json"]
     assert "`package-lock.json`" in client.user
+
+
+# ---------------------------------------------------------------------------
+# AI quality estimate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "AI estimate: Looks good | 5/5 | Small, tested change.",
+            QualityEstimate("Looks good", 5, "Small, tested change."),
+        ),
+        (
+            "- AI estimate: needs attention | 3 | Missing negative tests",
+            QualityEstimate("Needs attention", 3, "Missing negative tests"),
+        ),
+        (
+            "AI estimate: High risk | 1/5 | Unsafe migration without rollback",
+            QualityEstimate("High risk", 1, "Unsafe migration without rollback"),
+        ),
+    ],
+)
+def test_parse_quality_estimate_accepts_valid_values(
+    line: str, expected: QualityEstimate
+) -> None:
+    content, quality = parse_quality_estimate(f"{line}\n\n## Summary\nDetails.")
+
+    assert quality == expected
+    assert content == "## Summary\nDetails."
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "AI estimate: Looks great | 5/5 | Reasons here",
+        "AI estimate: Looks good | 0/5 | Reasons here",
+        "AI estimate: Looks good | 6/5 | Reasons here",
+        "AI estimate: Looks good | x/5 | Reasons here",
+        "AI estimate: Looks good | 4/5 | ",
+        "AI estimate: malformed",
+    ],
+)
+def test_parse_quality_estimate_rejects_invalid_values(line: str) -> None:
+    content, quality = parse_quality_estimate(f"{line}\n\n## Summary\nDetails.")
+
+    assert quality is None
+    assert content == "## Summary\nDetails."
+
+
+def test_parse_quality_estimate_without_marker_keeps_content() -> None:
+    content = "## Summary\nDetails."
+    result, quality = parse_quality_estimate(content)
+
+    assert result == content
+    assert quality is None
+
+
+def test_parse_quality_estimate_collapses_multiline_reasons() -> None:
+    _, quality = parse_quality_estimate(
+        "AI estimate: Needs attention | 2/5 | Broken edge case\nand missing tests"
+    )
+
+    assert quality is not None
+    assert "\n" not in quality.reasons
+    assert quality.reasons == "Broken edge case and missing tests"
+
+
+def test_review_diff_parses_quality_estimate(pull_request: PullRequest) -> None:
+    class FixedClient:
+        def complete(self, system: str, user: str) -> LLMResponse:
+            return LLMResponse(
+                content=(
+                    "AI estimate: High risk | 2/5 | Risky migration.\n\n"
+                    "## Summary\nA risky change."
+                ),
+                model="test-model",
+            )
+
+    result = review_diff(
+        pull_request,
+        parse_diff(SIMPLE_DIFF),
+        SIMPLE_DIFF,
+        FixedClient(),  # type: ignore[arg-type]
+    )
+
+    assert result.quality == QualityEstimate("High risk", 2, "Risky migration.")
+    assert result.content.startswith("## Summary")
+
+
+def test_format_review_shows_valid_quality_estimate(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    review_result.quality = QualityEstimate("Looks good", 5, "Tests cover the change.")
+    comment = format_review(review_result, pull_request)
+
+    assert "**AI estimate:**" in comment
+    assert "Looks good · score 5/5" in comment
+    assert "Reasons: Tests cover the change." in comment
+    assert "Automated estimate" in comment
+
+
+def test_format_review_shows_not_rated(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    comment = format_review(review_result, pull_request)
+
+    assert "**AI estimate:**" in comment
+    assert "Not rated" in comment
 
 
 # ---------------------------------------------------------------------------

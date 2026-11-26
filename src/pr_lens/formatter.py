@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pr_lens.diff_parser import ParsedDiff
 from pr_lens.github_client import PullRequest
-from pr_lens.llm_engine import ReviewResult
+from pr_lens.llm_engine import QualityEstimate, ReviewResult
 
 DEFAULT_MAX_COMMENT_CHARS = 60_000
 PR_LENS_COMMENT_MARKER = "<!-- pr-lens:review-comment -->"
@@ -73,6 +73,15 @@ def format_review(
             f"\u00b7 {stats}"
         ),
     ]
+    lines.extend(["", "> **AI estimate:**"])
+    if result.quality is not None:
+        quality: QualityEstimate = result.quality
+        lines.append(f"> {quality.verdict} · score {quality.score}/5")
+        lines.append(f"> Reasons: {quality.reasons.replace('`', "'")}")
+    else:
+        lines.append("> Not rated (the model response did not include a valid estimate).")
+    lines.append("> Automated estimate; verify with human review.")
+
     if result.diff_truncated:
         lines.extend(
             [
