@@ -27,6 +27,8 @@ from pr_lens.llm_engine import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
     DEFAULT_MAX_TOKENS,
+    MAX_MAX_TOKENS,
+    MIN_MAX_TOKENS,
     LLMClient,
     LLMError,
     review_diff,
@@ -52,7 +54,13 @@ def _excludes(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item.strip() for item in raw if item.strip())
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(
+    name: str,
+    default: int,
+    *,
+    min_value: int = 1,
+    max_value: int | None = None,
+) -> int:
     raw = os.getenv(name)
     if not raw or not raw.strip():
         return default
@@ -60,8 +68,10 @@ def _env_int(name: str, default: int) -> int:
         value = int(raw)
     except ValueError as exc:
         raise click.ClickException(f"{name} must be an integer, got {raw!r}.") from exc
-    if value < 1:
-        raise click.ClickException(f"{name} must be positive.")
+    if value < min_value:
+        raise click.ClickException(f"{name} must be at least {min_value}.")
+    if max_value is not None and value > max_value:
+        raise click.ClickException(f"{name} must not exceed {max_value}.")
     return value
 
 
@@ -112,9 +122,12 @@ def cli() -> None:
 )
 @click.option(
     "--max-tokens",
-    type=click.IntRange(min=1, max=100_000),
+    type=click.IntRange(min=MIN_MAX_TOKENS, max=MAX_MAX_TOKENS),
     default=None,
-    help="Maximum tokens in the model response (env: PR_LENS_MAX_TOKENS).",
+    help=(
+        "Maximum tokens in the model response "
+        f"({MIN_MAX_TOKENS}-{MAX_MAX_TOKENS}; env: PR_LENS_MAX_TOKENS)."
+    ),
 )
 @click.option(
     "--exclude",
@@ -182,7 +195,12 @@ def review(
     resolved_max_comment = max_comment_chars or _env_int(
         "PR_LENS_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS
     )
-    resolved_max_tokens = max_tokens or _env_int("PR_LENS_MAX_TOKENS", DEFAULT_MAX_TOKENS)
+    resolved_max_tokens = max_tokens or _env_int(
+        "PR_LENS_MAX_TOKENS",
+        DEFAULT_MAX_TOKENS,
+        min_value=MIN_MAX_TOKENS,
+        max_value=MAX_MAX_TOKENS,
+    )
     resolved_excludes = _excludes(excludes)
     resolved_comment_author = (
         comment_author

@@ -58,7 +58,7 @@ over environment variables.
 | `PR_LENS_LLM_API_KEY` | Yes | falls back to `OPENAI_API_KEY` | LLM API key |
 | `PR_LENS_LLM_BASE_URL` | No | `https://generativelanguage.googleapis.com/v1beta/openai/` | OpenAI-compatible API base URL |
 | `PR_LENS_LLM_MODEL` | No | `gemini-3.5-flash-lite` | Model name |
-| `PR_LENS_MAX_TOKENS` | No | `2000` | Maximum tokens in the model response |
+| `PR_LENS_MAX_TOKENS` | No | `4000` | Maximum tokens in the model response |
 | `PR_LENS_MAX_DIFF_CHARS` | No | `60000` | Maximum diff characters sent to the model |
 | `PR_LENS_MAX_COMMENT_CHARS` | No | `60000` | Maximum comment length (GitHub limit is 65536) |
 | `PR_LENS_EXCLUDE` | No | empty | Comma-separated additional file glob patterns to exclude |
@@ -121,7 +121,7 @@ Useful options:
 --base-url TEXT           OpenAI-compatible API base URL.
 --max-diff-chars INT      Maximum diff characters sent to the model.
 --max-comment-chars INT   Maximum formatted comment length.
---max-tokens INT          Maximum response tokens (default 2000).
+--max-tokens INT          Maximum response tokens (default 4000).
 --temperature FLOAT       Sampling temperature (default 0.2).
 --exclude PATTERN         Additional file glob; repeatable or comma-separated.
 --comment-author TEXT     Account allowed to own an existing pr-lens comment.
@@ -162,7 +162,7 @@ Optional repository variables:
 | --- | --- |
 | `PR_LENS_LLM_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` |
 | `PR_LENS_LLM_MODEL` | `gemini-3.5-flash-lite` |
-| `PR_LENS_MAX_TOKENS` | `2000` |
+| `PR_LENS_MAX_TOKENS` | `4000` |
 | `PR_LENS_MAX_DIFF_CHARS` | `60000` |
 | `PR_LENS_MAX_COMMENT_CHARS` | `60000` |
 | `PR_LENS_EXCLUDE` | empty |

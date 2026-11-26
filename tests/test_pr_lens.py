@@ -29,6 +29,7 @@ from pr_lens.github_client import (
 from pr_lens.llm_engine import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    DEFAULT_MAX_TOKENS,
     LLMClient,
     LLMError,
     LLMResponse,
@@ -1756,6 +1757,7 @@ def test_cli_uses_gemini_defaults(
     assert llm.base_url == DEFAULT_LLM_BASE_URL
     assert DEFAULT_LLM_BASE_URL == "https://generativelanguage.googleapis.com/v1beta/openai/"
     assert DEFAULT_LLM_MODEL == "gemini-3.5-flash-lite"
+    assert DEFAULT_MAX_TOKENS == 4_000
 
 
 def test_cli_uses_model_and_base_url_env(
@@ -1800,6 +1802,21 @@ def test_cli_max_tokens_option_overrides_env(
     )
     assert result.exit_code == 0, result.output
     assert llm.max_tokens == 500
+
+
+@pytest.mark.parametrize("value", ["0", "100001"])
+def test_cli_rejects_out_of_range_max_tokens_env(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    del fake_clients
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_MAX_TOKENS", value)
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
+    assert result.exit_code == 1
+    assert "PR_LENS_MAX_TOKENS" in result.output
 
 
 def test_cli_rejects_invalid_max_tokens_env(

@@ -17,7 +17,9 @@ from pr_lens.prompts import PromptBundle, build_prompt_bundle
 
 DEFAULT_LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 DEFAULT_LLM_MODEL = "gemini-3.5-flash-lite"
-DEFAULT_MAX_TOKENS = 2_000
+DEFAULT_MAX_TOKENS = 4_000
+MIN_MAX_TOKENS = 1
+MAX_MAX_TOKENS = 100_000
 
 
 class LLMError(RuntimeError):
