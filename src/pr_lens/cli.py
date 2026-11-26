@@ -10,8 +10,13 @@ from dotenv import load_dotenv
 
 from pr_lens import __version__
 from pr_lens.diff_parser import parse_diff
-from pr_lens.formatter import DEFAULT_MAX_COMMENT_CHARS, format_review
+from pr_lens.formatter import (
+    DEFAULT_MAX_COMMENT_CHARS,
+    PR_LENS_COMMENT_MARKER,
+    format_review,
+)
 from pr_lens.github_client import (
+    DEFAULT_COMMENT_AUTHOR,
     DEFAULT_GITHUB_API_URL,
     GitHubClient,
     GitHubError,
@@ -102,6 +107,14 @@ def cli() -> None:
     default=None,
     help="Maximum tokens in the model response (env: PR_LENS_MAX_TOKENS).",
 )
+@click.option(
+    "--comment-author",
+    default=None,
+    help=(
+        "Account that owns an existing pr-lens comment "
+        "(env: PR_LENS_COMMENT_AUTHOR, default: github-actions[bot])."
+    ),
+)
 @click.option("--no-footer", is_flag=True, help="Omit the generated-by footer.")
 def review(
     target: str,
@@ -114,6 +127,7 @@ def review(
     max_comment_chars: int | None,
     temperature: float,
     max_tokens: int | None,
+    comment_author: str | None,
     no_footer: bool,
 ) -> None:
     """Review TARGET, which is OWNER/REPO plus NUMBER or a pull request URL."""
@@ -150,6 +164,11 @@ def review(
         "PR_LENS_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS
     )
     resolved_max_tokens = max_tokens or _env_int("PR_LENS_MAX_TOKENS", DEFAULT_MAX_TOKENS)
+    resolved_comment_author = (
+        comment_author
+        or _env("PR_LENS_COMMENT_AUTHOR", default=DEFAULT_COMMENT_AUTHOR)
+        or DEFAULT_COMMENT_AUTHOR
+    )
     if resolved_max_comment > GITHUB_COMMENT_LIMIT:
         raise click.ClickException(
             f"PR_LENS_MAX_COMMENT_CHARS must not exceed {GITHUB_COMMENT_LIMIT}."
@@ -207,11 +226,17 @@ def review(
             click.echo(comment)
 
             if post:
-                url = github.post_comment(repository, pr_number, comment)
+                action, url = github.upsert_review_comment(
+                    repository,
+                    pr_number,
+                    comment,
+                    marker=PR_LENS_COMMENT_MARKER,
+                    expected_author=resolved_comment_author,
+                )
                 if url:
-                    click.echo(f"Posted review comment: {url}", err=True)
+                    click.echo(f"{action.capitalize()} review comment: {url}", err=True)
                 else:
-                    click.echo("Posted review comment.", err=True)
+                    click.echo(f"{action.capitalize()} review comment.", err=True)
     except (GitHubError, LLMError) as exc:
         raise click.ClickException(str(exc)) from exc
     except OSError as exc:

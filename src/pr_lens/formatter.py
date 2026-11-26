@@ -7,6 +7,7 @@ from pr_lens.github_client import PullRequest
 from pr_lens.llm_engine import ReviewResult
 
 DEFAULT_MAX_COMMENT_CHARS = 60_000
+PR_LENS_COMMENT_MARKER = "<!-- pr-lens:review-comment -->"
 _TRUNCATION_NOTE = "\n\n---\n\n_Review truncated because it exceeded the configured comment limit._"
 
 
@@ -60,6 +61,7 @@ def format_review(
     content = result.content.strip() or "The model returned an empty review."
 
     lines = [
+        PR_LENS_COMMENT_MARKER,
         "## \U0001f50d PR Lens review",
         "",
         f"> **{_one_line(pull_request.title)}**",
