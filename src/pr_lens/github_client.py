@@ -111,6 +111,22 @@ def _error_message(response: httpx.Response) -> str:
     return text or response.reason_phrase or f"HTTP {response.status_code}"
 
 
+def _redact(text: str, secret: str | None) -> str:
+    """Remove a configured credential from an error message."""
+    return text.replace(secret, "[REDACTED]") if secret else text
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    """Coerce an API value to an integer without crashing on bad input."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return default
+
+
 class GitHubClient:
     """A minimal synchronous client for the GitHub pull request endpoints."""
 
@@ -123,6 +139,7 @@ class GitHubClient:
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.api_url = api_url.rstrip("/")
+        self._token = token
         headers = {
             "Accept": GITHUB_ACCEPT_JSON,
             "X-GitHub-Api-Version": GITHUB_API_VERSION,
@@ -162,11 +179,14 @@ class GitHubClient:
                 **kwargs,
             )
         except httpx.HTTPError as exc:
-            raise GitHubError(f"GitHub request failed: {exc}") from exc
+            raise GitHubError(
+                _redact(f"GitHub request failed: {exc}", self._token)
+            ) from exc
 
         if response.is_error:
+            message = _redact(_error_message(response), self._token)
             raise GitHubError(
-                f"GitHub API error ({response.status_code}): {_error_message(response)}",
+                f"GitHub API error ({response.status_code}): {message}",
                 status_code=response.status_code,
             )
         return response
@@ -196,9 +216,9 @@ class GitHubClient:
             head_ref=str(head.get("ref") or "") if isinstance(head, dict) else "",
             html_url=str(data.get("html_url") or f"https://github.com/{repository}/pull/{number}"),
             draft=bool(data.get("draft")),
-            additions=int(data.get("additions") or 0),
-            deletions=int(data.get("deletions") or 0),
-            changed_files=int(data.get("changed_files") or 0),
+            additions=_as_int(data.get("additions")),
+            deletions=_as_int(data.get("deletions")),
+            changed_files=_as_int(data.get("changed_files")),
         )
 
     def get_diff(self, repository: str, number: int) -> str:
@@ -231,6 +251,7 @@ class GitHubClient:
         """List issue comments, following pagination until GitHub runs out."""
         self._validate_repository(repository)
         comments: list[IssueComment] = []
+        seen_pages: set[tuple[tuple[int, str, str], ...]] = set()
         page = 1
         while True:
             response = self._request(
@@ -245,10 +266,20 @@ class GitHubClient:
             if not isinstance(data, list):
                 raise GitHubError("GitHub returned an unexpected comment payload.")
 
-            for item in data:
-                comment = _parse_comment(item)
-                if comment is not None:
-                    comments.append(comment)
+            page_comments = [
+                comment
+                for item in data
+                if (comment := _parse_comment(item)) is not None
+            ]
+            fingerprint = tuple(
+                (comment.id, comment.body, comment.author) for comment in page_comments
+            )
+            if fingerprint in seen_pages:
+                raise GitHubError(
+                    "GitHub comment pagination repeated; refusing to continue."
+                )
+            seen_pages.add(fingerprint)
+            comments.extend(page_comments)
 
             if len(data) < per_page:
                 break

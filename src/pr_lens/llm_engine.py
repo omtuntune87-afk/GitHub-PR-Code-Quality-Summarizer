@@ -93,6 +93,11 @@ def _as_int(value: object) -> int | None:
     return None
 
 
+def _redact(text: str, secret: str | None) -> str:
+    """Remove a configured credential from an error message."""
+    return text.replace(secret, "[REDACTED]") if secret else text
+
+
 def _error_message(response: httpx.Response) -> str:
     try:
         payload = response.json()
@@ -225,6 +230,7 @@ class LLMClient:
             raise ValueError("retry_backoff must not be negative.")
         if max_retry_wait < 0:
             raise ValueError("max_retry_wait must not be negative.")
+        self._api_key = api_key
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -288,13 +294,18 @@ class LLMClient:
             except httpx.TimeoutException as exc:
                 if attempt >= self._max_retries:
                     raise LLMError(
-                        f"LLM request timed out after {attempt + 1} attempt(s): {exc}"
+                        _redact(
+                            f"LLM request timed out after {attempt + 1} attempt(s): {exc}",
+                            self._api_key,
+                        )
                     ) from exc
                 self._sleep(self._retry_wait(attempt, None))
                 attempt += 1
                 continue
             except httpx.HTTPError as exc:
-                raise LLMError(f"LLM request failed: {exc}") from exc
+                raise LLMError(
+                    _redact(f"LLM request failed: {exc}", self._api_key)
+                ) from exc
 
             status = response.status_code
             retryable = status == 429 or 500 <= status <= 599
@@ -305,8 +316,9 @@ class LLMClient:
 
             if response.is_error:
                 attempts = f" after {attempt + 1} attempts" if retryable else ""
+                message = _redact(_error_message(response), self._api_key)
                 raise LLMError(
-                    f"LLM API error ({status}){attempts}: {_error_message(response)}",
+                    f"LLM API error ({status}){attempts}: {message}",
                     status_code=status,
                 )
             break

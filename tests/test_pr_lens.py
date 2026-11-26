@@ -752,6 +752,37 @@ def test_get_pull_request_defaults_missing_fields() -> None:
     assert pr.draft is False
 
 
+def test_get_pull_request_handles_malformed_nested_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "title": ["unexpected"],
+                "body": None,
+                "user": "not-an-object",
+                "base": "not-an-object",
+                "head": "not-an-object",
+                "additions": "3",
+                "deletions": "many",
+                "changed_files": None,
+                "draft": "yes",
+            },
+        )
+
+    with _github_client(handler, token=None) as github:
+        pr = github.get_pull_request("octo/demo", 7)
+
+    assert pr.title == "['unexpected']"
+    assert pr.body == ""
+    assert pr.author == "unknown"
+    assert pr.base_ref == ""
+    assert pr.head_ref == ""
+    assert pr.additions == 3
+    assert pr.deletions == 0
+    assert pr.changed_files == 0
+    assert pr.draft is True
+
+
 def test_get_diff_requests_diff_media_type() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Accept"] == "application/vnd.github.v3.diff"
@@ -815,6 +846,25 @@ def test_list_comments_follows_pagination() -> None:
         "alice",
         DEFAULT_COMMENT_AUTHOR,
     ]
+
+
+def test_list_comments_stops_on_repeated_page() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls > 3:
+            raise AssertionError("pagination did not stop")
+        return httpx.Response(200, json=[_comment_payload(1, "same")])
+
+    with (
+        _github_client(handler) as github,
+        pytest.raises(GitHubError, match="pagination"),
+    ):
+        github.list_comments("octo/demo", 7, per_page=1)
+
+    assert calls == 2
 
 
 def test_upsert_comment_updates_marked_comment_by_expected_author() -> None:
@@ -959,6 +1009,22 @@ def test_github_error_includes_api_message() -> None:
 
     assert exc_info.value.status_code == 404
     assert "Not Found" in str(exc_info.value)
+
+
+def test_github_error_redacts_token_from_provider_message() -> None:
+    secret = "github-secret"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": f"bad token {secret}"})
+
+    with (
+        _github_client(handler, token=secret) as github,
+        pytest.raises(GitHubError) as exc_info,
+    ):
+        github.get_pull_request("octo/demo", 7)
+
+    assert secret not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
 
 
 def test_github_network_error_is_wrapped() -> None:
@@ -1160,6 +1226,28 @@ def test_llm_accepts_content_parts() -> None:
         response = client.complete("system", "user")
 
     assert response.content == "part one two"
+
+
+def test_llm_error_redacts_api_key_from_provider_message() -> None:
+    secret = "secret-from-env"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": {"message": f"invalid key {secret}"}}
+        )
+
+    with (
+        LLMClient(
+            secret,
+            transport=httpx.MockTransport(handler),
+            retry_sleep=lambda _: None,
+        ) as client,
+        pytest.raises(LLMError) as exc_info,
+    ):
+        client.complete("system", "user")
+
+    assert secret not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)
 
 
 def test_llm_error_includes_provider_message() -> None:
