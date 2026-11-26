@@ -13,7 +13,12 @@ import pr_lens.cli as cli_module
 from pr_lens import __version__
 from pr_lens.cli import cli as cli_command
 from pr_lens.diff_parser import parse_diff
-from pr_lens.formatter import PR_LENS_COMMENT_MARKER, format_review, truncate_comment
+from pr_lens.formatter import (
+    PR_LENS_COMMENT_MARKER,
+    format_no_review,
+    format_review,
+    truncate_comment,
+)
 from pr_lens.github_client import (
     DEFAULT_COMMENT_AUTHOR,
     GitHubClient,
@@ -587,6 +592,18 @@ def test_partial_review_never_shows_positive_rating(
     assert "Not rated" in comment
     assert "Looks good" not in comment
     assert "score 5/5" not in comment
+
+
+def test_format_no_review_has_no_rating(pull_request: PullRequest) -> None:
+    comment = format_no_review(pull_request, ["new.txt", "package-lock.json"])
+
+    assert comment.startswith(PR_LENS_COMMENT_MARKER)
+    assert "Nothing was reviewed" in comment
+    assert "Not rated" in comment
+    assert "score" not in comment
+    assert "Looks good" not in comment
+    assert "`new.txt`" in comment
+    assert "`package-lock.json`" in comment
 
 
 def test_format_review_handles_empty_content(
@@ -1876,9 +1893,44 @@ def test_cli_skips_llm_when_all_files_are_excluded(
     )
     assert result.exit_code == 0, result.output
     assert "skipping LLM review" in result.output
+    assert "Nothing was reviewed" in result.output
+    assert "Not rated" in result.output
+    assert "score" not in result.output
     assert llm.calls == 0
     assert github.posted == []
-    assert github.updated == []
+    assert len(github.updated) == 1
+    assert "Nothing was reviewed" in github.updated[0][2]
+
+
+def test_cli_writes_no_review_output_when_all_files_are_excluded(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    github, llm = fake_clients
+    github.diff_text = NEW_FILE_DIFF
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    output = tmp_path / "review.md"
+    result = CliRunner().invoke(
+        cli_command,
+        [
+            "review",
+            "octo/demo",
+            "7",
+            "--exclude",
+            "new.txt",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert llm.calls == 0
+    saved = output.read_text(encoding="utf-8")
+    assert "Nothing was reviewed" in saved
+    assert "Not rated" in saved
+    assert "score" not in saved
 
 
 def test_cli_passes_custom_exclusion_to_prompt(

@@ -13,6 +13,7 @@ from pr_lens.diff_parser import parse_diff
 from pr_lens.formatter import (
     DEFAULT_MAX_COMMENT_CHARS,
     PR_LENS_COMMENT_MARKER,
+    format_no_review,
     format_review,
 )
 from pr_lens.github_client import (
@@ -216,6 +217,30 @@ def review(
                     "No reviewable files remained after exclusions; skipping LLM review.",
                     err=True,
                 )
+                comment = format_no_review(
+                    pull_request,
+                    filtered.skipped_files,
+                    max_chars=resolved_max_comment,
+                    include_footer=not no_footer,
+                )
+                if output is not None:
+                    output.write_text(comment + "\n", encoding="utf-8")
+                    click.echo(f"Wrote review to {output}", err=True)
+                click.echo(comment)
+                if post:
+                    action, url = github.upsert_review_comment(
+                        repository,
+                        pr_number,
+                        comment,
+                        marker=PR_LENS_COMMENT_MARKER,
+                        expected_author=resolved_comment_author,
+                    )
+                    if url:
+                        click.echo(
+                            f"{action.capitalize()} review comment: {url}", err=True
+                        )
+                    else:
+                        click.echo(f"{action.capitalize()} review comment.", err=True)
                 return
 
             click.echo(
