@@ -13,12 +13,18 @@ PR_LENS_COMMENT_MARKER = "<!-- pr-lens:review-comment -->"
 _TRUNCATION_NOTE = "\n\n---\n\n_Review truncated because it exceeded the configured comment limit._"
 _MIN_COMMENT_CHARS = 120
 _ZERO_WIDTH_SPACE = "\u200b"
-_ESTIMATE_PREFIX_RE = re.compile(r"^\s*(?:[-*]\s*)?ai\s*estimate\s*:", re.IGNORECASE)
-_VERDICT_RE = re.compile(
-    r"\b(?:looks good|needs attention|high risk)\b", re.IGNORECASE
+_RATING_LABEL_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:ai(?:\s+quality)?\s+estimate|estimate|verdict|rating|quality|score)\s*:",
+    re.IGNORECASE,
 )
-_SCORE_RE = re.compile(
-    r"\b(?:[1-5]\s*/\s*5|score\s*:?\s*[1-5])\b", re.IGNORECASE
+_RATING_VALUE = (
+    r"(?:looks good|needs attention|high risk|[1-5]\s*/\s*5"
+    r"|score\s*:?\s*[1-5](?:\s*/\s*5)?)"
+)
+_RATING_ONLY_RE = re.compile(
+    rf"^{_RATING_VALUE}"
+    rf"(?:\s*(?:[|,;:·\\-]+|\band\b)\s*{_RATING_VALUE})*$",
+    re.IGNORECASE,
 )
 
 
@@ -70,17 +76,24 @@ def _safe_inline(value: str) -> str:
     return f"`{_sanitize(value).replace('`', "'")}`"
 
 
+def _is_explicit_rating_line(line: str) -> bool:
+    """Return true only for a declared or rating-only line, not a finding."""
+    stripped = line.strip()
+    if _RATING_LABEL_RE.match(stripped):
+        return True
+
+    candidate = stripped
+    if candidate.startswith(("-", "*")):
+        candidate = candidate[1:].lstrip()
+    candidate = candidate.strip().strip("*_`").strip().rstrip(".!").strip()
+    if not candidate:
+        return False
+    return bool(_RATING_ONLY_RE.fullmatch(candidate))
+
+
 def _remove_rating_lines(content: str) -> str:
-    """Drop model lines that repeat a rating in a partial review."""
-    kept = [
-        line
-        for line in content.splitlines()
-        if not (
-            _ESTIMATE_PREFIX_RE.match(line)
-            or _VERDICT_RE.search(line)
-            or _SCORE_RE.search(line)
-        )
-    ]
+    """Drop explicit rating declarations from a partial review only."""
+    kept = [line for line in content.splitlines() if not _is_explicit_rating_line(line)]
     return "\n".join(kept).strip()
 
 

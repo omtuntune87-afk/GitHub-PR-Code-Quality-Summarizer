@@ -602,31 +602,47 @@ def test_partial_review_never_shows_positive_rating(
 
     comment = format_review(review_result, pull_request)
 
+    # The rating block must be neutralized. The previous assertions forbade
+    # these phrases anywhere in the comment, which encouraged broad deletion
+    # of findings; the dedicated test below now checks precise declaration
+    # removal and verifies that ordinary findings remain visible.
     assert "**Partial review:**" in comment
-    assert "Not rated" in comment
-    assert "Looks good" not in comment
-    assert "score 5/5" not in comment
+    assert "> Not rated (partial review; ratings are disabled)." in comment
 
 
-def test_partial_review_removes_repeated_rating_lines_from_content(
+def test_partial_review_removes_only_explicit_rating_declarations(
     review_result: ReviewResult, pull_request: PullRequest
 ) -> None:
+    # The previous expectation removed every line containing a verdict or
+    # score, which deleted real findings. Only explicit rating declarations
+    # should be suppressed; ordinary findings must remain visible.
     review_result.diff_truncated = True
     review_result.quality = QualityEstimate("Looks good", 5, "Small, tested change.")
     review_result.content = (
-        "## Summary\n"
-        "Looks good · score 5/5\n"
         "AI estimate: Looks good | 5/5 | Repeated.\n"
-        "Still useful text."
+        "Verdict: Looks good\n"
+        "Score: 5/5\n"
+        "Looks good · score 5/5\n"
+        "5/5\n"
+        "Needs attention\n"
+        "- **Blocker:** SQL injection in `db.py` is a high risk.\n"
+        "The new log looks good but leaks the password.\n"
+        "Finding: needs attention when the timeout is reached."
     )
 
     comment = format_review(review_result, pull_request)
 
     assert "**Partial review:**" in comment
-    assert "Not rated" in comment
-    assert "Looks good" not in comment
-    assert "5/5" not in comment
-    assert "Still useful text." in comment
+    assert "> Not rated (partial review; ratings are disabled)." in comment
+    assert "AI estimate: Looks good" not in comment
+    assert "Verdict: Looks good" not in comment
+    assert "\nScore: 5/5" not in comment
+    assert "Looks good · score 5/5" not in comment
+    assert "\n5/5\n" not in comment
+    assert "\nNeeds attention\n" not in comment
+    assert "- **Blocker:** SQL injection in `db.py` is a high risk." in comment
+    assert "The new log looks good but leaks the password." in comment
+    assert "Finding: needs attention when the timeout is reached." in comment
 
 
 def test_format_no_review_has_no_rating(pull_request: PullRequest) -> None:
