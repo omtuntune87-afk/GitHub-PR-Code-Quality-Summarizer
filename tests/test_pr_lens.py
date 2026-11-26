@@ -674,13 +674,171 @@ def test_llm_error_includes_provider_message() -> None:
         return httpx.Response(429, json={"error": {"message": "slow down"}})
 
     with (
-        LLMClient("secret", transport=httpx.MockTransport(handler)) as client,
+        LLMClient(
+            "secret",
+            transport=httpx.MockTransport(handler),
+            retry_sleep=lambda _: None,
+        ) as client,
         pytest.raises(LLMError) as exc_info,
     ):
         client.complete("system", "user")
 
     assert exc_info.value.status_code == 429
     assert "slow down" in str(exc_info.value)
+    assert "after 4 attempts" in str(exc_info.value)
+
+
+def _success_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": "complete"}}]},
+    )
+
+
+def test_llm_retries_rate_limit_then_succeeds() -> None:
+    calls = 0
+    waits: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, json={"error": {"message": "slow down"}})
+        return _success_response()
+
+    with LLMClient(
+        "secret",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=0.5,
+        retry_sleep=waits.append,
+    ) as client:
+        response = client.complete("system", "user")
+
+    assert response.content == "complete"
+    assert calls == 2
+    assert waits == [0.5]
+
+
+def test_llm_retries_server_error_then_succeeds() -> None:
+    calls = 0
+    waits: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            return httpx.Response(503, json={"error": {"message": "unavailable"}})
+        return _success_response()
+
+    with LLMClient(
+        "secret",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=0.5,
+        retry_sleep=waits.append,
+    ) as client:
+        response = client.complete("system", "user")
+
+    assert response.content == "complete"
+    assert calls == 3
+    assert waits == [0.5, 1.0]
+
+
+def test_llm_retries_timeout_then_succeeds() -> None:
+    calls = 0
+    waits: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectTimeout("timed out")
+        return _success_response()
+
+    with LLMClient(
+        "secret",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=0.5,
+        retry_sleep=waits.append,
+    ) as client:
+        response = client.complete("system", "user")
+
+    assert response.content == "complete"
+    assert calls == 2
+    assert waits == [0.5]
+
+
+def test_llm_stops_retrying_after_limit() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500, json={"error": {"message": "unavailable"}})
+
+    with (
+        LLMClient(
+            "secret",
+            transport=httpx.MockTransport(handler),
+            max_retries=2,
+            retry_backoff=0.25,
+            retry_sleep=lambda _: None,
+        ) as client,
+        pytest.raises(LLMError, match="after 3 attempts"),
+    ):
+        client.complete("system", "user")
+
+    assert calls == 3
+
+
+def test_llm_honors_and_caps_retry_after() -> None:
+    calls = 0
+    waits: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "999"},
+                json={"error": {"message": "slow down"}},
+            )
+        return _success_response()
+
+    with LLMClient(
+        "secret",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=0.5,
+        max_retry_wait=10.0,
+        retry_sleep=waits.append,
+    ) as client:
+        response = client.complete("system", "user")
+
+    assert response.content == "complete"
+    assert waits == [10.0]
+
+
+def test_llm_does_not_retry_other_client_errors() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(400, json={"error": {"message": "bad request"}})
+
+    with (
+        LLMClient(
+            "secret",
+            transport=httpx.MockTransport(handler),
+            retry_sleep=lambda _: None,
+        ) as client,
+        pytest.raises(LLMError) as exc_info,
+    ):
+        client.complete("system", "user")
+
+    assert calls == 1
+    assert exc_info.value.status_code == 400
+    assert "after" not in str(exc_info.value)
 
 
 def test_llm_invalid_json_is_wrapped() -> None:

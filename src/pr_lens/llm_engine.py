@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -109,6 +113,24 @@ def _is_truncated(finish_reason: str | None) -> bool:
     }
 
 
+def _parse_retry_after(value: str) -> float | None:
+    """Parse a Retry-After header expressed as seconds or an HTTP date."""
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+    return max(0.0, seconds)
+
+
 class LLMClient:
     """A minimal client for OpenAI-compatible ``/chat/completions`` APIs."""
 
@@ -121,15 +143,29 @@ class LLMClient:
         timeout: float = 120.0,
         temperature: float = 0.2,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_retries: int = 3,
+        retry_backoff: float = 1.0,
+        max_retry_wait: float = 10.0,
+        retry_sleep: Callable[[float], None] | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("An LLM API key is required.")
         if not base_url.strip():
             raise ValueError("An LLM base URL is required.")
+        if max_retries < 0:
+            raise ValueError("max_retries must not be negative.")
+        if retry_backoff < 0:
+            raise ValueError("retry_backoff must not be negative.")
+        if max_retry_wait < 0:
+            raise ValueError("max_retry_wait must not be negative.")
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self._max_retries = max_retries
+        self._retry_backoff = retry_backoff
+        self._max_retry_wait = max_retry_wait
+        self._sleep = retry_sleep or time.sleep
         self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
         self._http = httpx.Client(
             timeout=timeout,
@@ -149,6 +185,18 @@ class LLMClient:
     def close(self) -> None:
         self._http.close()
 
+    def _backoff(self, attempt: int) -> float:
+        return min(self._retry_backoff * (2**attempt), self._max_retry_wait)
+
+    def _retry_wait(self, attempt: int, response: httpx.Response | None) -> float:
+        if response is not None:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                seconds = _parse_retry_after(retry_after)
+                if seconds is not None:
+                    return min(seconds, self._max_retry_wait)
+        return self._backoff(attempt)
+
     def complete(
         self,
         system: str,
@@ -156,7 +204,7 @@ class LLMClient:
         *,
         model: str | None = None,
     ) -> LLMResponse:
-        """Request a chat completion and validate the response shape."""
+        """Request a chat completion, retrying transient failures."""
         payload = {
             "model": model or self.model,
             "messages": [
@@ -166,16 +214,37 @@ class LLMClient:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
-        try:
-            response = self._http.post(self._endpoint, json=payload)
-        except httpx.HTTPError as exc:
-            raise LLMError(f"LLM request failed: {exc}") from exc
 
-        if response.is_error:
-            raise LLMError(
-                f"LLM API error ({response.status_code}): {_error_message(response)}",
-                status_code=response.status_code,
-            )
+        attempt = 0
+        while True:
+            try:
+                response = self._http.post(self._endpoint, json=payload)
+            except httpx.TimeoutException as exc:
+                if attempt >= self._max_retries:
+                    raise LLMError(
+                        f"LLM request timed out after {attempt + 1} attempt(s): {exc}"
+                    ) from exc
+                self._sleep(self._retry_wait(attempt, None))
+                attempt += 1
+                continue
+            except httpx.HTTPError as exc:
+                raise LLMError(f"LLM request failed: {exc}") from exc
+
+            status = response.status_code
+            retryable = status == 429 or 500 <= status <= 599
+            if retryable and attempt < self._max_retries:
+                self._sleep(self._retry_wait(attempt, response))
+                attempt += 1
+                continue
+
+            if response.is_error:
+                attempts = f" after {attempt + 1} attempts" if retryable else ""
+                raise LLMError(
+                    f"LLM API error ({status}){attempts}: {_error_message(response)}",
+                    status_code=status,
+                )
+            break
+
         try:
             data = response.json()
         except ValueError as exc:
