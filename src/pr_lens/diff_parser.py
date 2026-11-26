@@ -205,18 +205,21 @@ def parse_diff(text: str) -> ParsedDiff:
     """
     parsed = ParsedDiff()
     lines = text.splitlines()
+    plain_unified = not any(line.startswith("diff --git ") for line in lines)
 
     current: FileDiff | None = None
     hunk: DiffHunk | None = None
     old_cursor = 0
     new_cursor = 0
+    old_seen = 0
+    new_seen = 0
     in_hunk = False
     declared_new = False
     declared_deleted = False
     renamed = False
 
     def finish_file() -> None:
-        nonlocal current, hunk, in_hunk
+        nonlocal current, hunk, in_hunk, old_seen, new_seen
         if current is not None:
             _finalize_file(
                 current,
@@ -227,14 +230,18 @@ def parse_diff(text: str) -> ParsedDiff:
         current = None
         hunk = None
         in_hunk = False
+        old_seen = 0
+        new_seen = 0
 
     def start_file() -> FileDiff:
-        nonlocal declared_new, declared_deleted, renamed, hunk, in_hunk
+        nonlocal declared_new, declared_deleted, renamed, hunk, in_hunk, old_seen, new_seen
         declared_new = False
         declared_deleted = False
         renamed = False
         hunk = None
         in_hunk = False
+        old_seen = 0
+        new_seen = 0
         file = FileDiff()
         parsed.files.append(file)
         return file
@@ -271,10 +278,22 @@ def parse_diff(text: str) -> ParsedDiff:
             current.hunks.append(hunk)
             old_cursor = old_start
             new_cursor = new_start
+            old_seen = 0
+            new_seen = 0
             in_hunk = True
             continue
 
         if in_hunk and hunk is not None and line:
+            if (
+                plain_unified
+                and line.startswith("--- ")
+                and old_seen >= hunk.old_count
+                and new_seen >= hunk.new_count
+            ):
+                finish_file()
+                current = start_file()
+                current.old_path = _clean_path(line[4:])
+                continue
             if line[0] in " +-\\":
                 old_cursor, new_cursor = _append_hunk_line(
                     hunk,
@@ -283,6 +302,8 @@ def parse_diff(text: str) -> ParsedDiff:
                     old_cursor=old_cursor,
                     new_cursor=new_cursor,
                 )
+                old_seen = old_cursor - old_start
+                new_seen = new_cursor - new_start
                 continue
             in_hunk = False
 

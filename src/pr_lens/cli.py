@@ -10,8 +10,14 @@ from dotenv import load_dotenv
 
 from pr_lens import __version__
 from pr_lens.diff_parser import parse_diff
-from pr_lens.formatter import DEFAULT_MAX_COMMENT_CHARS, format_review
+from pr_lens.formatter import (
+    DEFAULT_MAX_COMMENT_CHARS,
+    PR_LENS_COMMENT_MARKER,
+    format_no_review,
+    format_review,
+)
 from pr_lens.github_client import (
+    DEFAULT_COMMENT_AUTHOR,
     DEFAULT_GITHUB_API_URL,
     GitHubClient,
     GitHubError,
@@ -21,13 +27,18 @@ from pr_lens.llm_engine import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
     DEFAULT_MAX_TOKENS,
+    MAX_MAX_TOKENS,
+    MIN_MAX_TOKENS,
     LLMClient,
     LLMError,
     review_diff,
 )
-from pr_lens.prompts import DEFAULT_MAX_DIFF_CHARS
+from pr_lens.prompts import DEFAULT_MAX_DIFF_CHARS, filter_reviewable_files
 
 GITHUB_COMMENT_LIMIT = 65_000
+MIN_MAX_DIFF_CHARS = 100
+MAX_MAX_DIFF_CHARS = 2_000_000
+MIN_MAX_COMMENT_CHARS = 100
 
 
 def _env(primary: str, *fallbacks: str, default: str | None = None) -> str | None:
@@ -38,7 +49,21 @@ def _env(primary: str, *fallbacks: str, default: str | None = None) -> str | Non
     return default
 
 
-def _env_int(name: str, default: int) -> int:
+def _excludes(values: tuple[str, ...]) -> tuple[str, ...]:
+    raw = list(values)
+    configured = _env("PR_LENS_EXCLUDE")
+    if configured:
+        raw.extend(configured.split(","))
+    return tuple(item.strip() for item in raw if item.strip())
+
+
+def _env_int(
+    name: str,
+    default: int,
+    *,
+    min_value: int = 1,
+    max_value: int | None = None,
+) -> int:
     raw = os.getenv(name)
     if not raw or not raw.strip():
         return default
@@ -46,8 +71,10 @@ def _env_int(name: str, default: int) -> int:
         value = int(raw)
     except ValueError as exc:
         raise click.ClickException(f"{name} must be an integer, got {raw!r}.") from exc
-    if value < 1:
-        raise click.ClickException(f"{name} must be positive.")
+    if value < min_value:
+        raise click.ClickException(f"{name} must be at least {min_value}.")
+    if max_value is not None and value > max_value:
+        raise click.ClickException(f"{name} must not exceed {max_value}.")
     return value
 
 
@@ -79,15 +106,22 @@ def cli() -> None:
 )
 @click.option(
     "--max-diff-chars",
-    type=click.IntRange(min=100, max=2_000_000),
+    type=click.IntRange(min=MIN_MAX_DIFF_CHARS, max=MAX_MAX_DIFF_CHARS),
     default=None,
-    help="Maximum diff characters sent to the model (env: PR_LENS_MAX_DIFF_CHARS).",
+    help=(
+        "Maximum diff characters sent to the model "
+        f"({MIN_MAX_DIFF_CHARS}-{MAX_MAX_DIFF_CHARS}; env: PR_LENS_MAX_DIFF_CHARS)."
+    ),
 )
 @click.option(
     "--max-comment-chars",
-    type=click.IntRange(min=100, max=GITHUB_COMMENT_LIMIT),
+    type=click.IntRange(min=MIN_MAX_COMMENT_CHARS, max=GITHUB_COMMENT_LIMIT),
     default=None,
-    help="Maximum comment length (env: PR_LENS_MAX_COMMENT_CHARS).",
+    help=(
+        "Maximum comment length "
+        f"({MIN_MAX_COMMENT_CHARS}-{GITHUB_COMMENT_LIMIT}; "
+        "env: PR_LENS_MAX_COMMENT_CHARS)."
+    ),
 )
 @click.option(
     "--temperature",
@@ -98,10 +132,29 @@ def cli() -> None:
 )
 @click.option(
     "--max-tokens",
-    type=click.IntRange(min=1, max=100_000),
-    default=DEFAULT_MAX_TOKENS,
-    show_default=True,
-    help="Maximum tokens in the model response.",
+    type=click.IntRange(min=MIN_MAX_TOKENS, max=MAX_MAX_TOKENS),
+    default=None,
+    help=(
+        "Maximum tokens in the model response "
+        f"({MIN_MAX_TOKENS}-{MAX_MAX_TOKENS}; env: PR_LENS_MAX_TOKENS)."
+    ),
+)
+@click.option(
+    "--exclude",
+    "excludes",
+    multiple=True,
+    help=(
+        "Additional file glob to exclude from review; repeatable or comma-separated "
+        "(env: PR_LENS_EXCLUDE)."
+    ),
+)
+@click.option(
+    "--comment-author",
+    default=None,
+    help=(
+        "Account that owns an existing pr-lens comment "
+        "(env: PR_LENS_COMMENT_AUTHOR, default: github-actions[bot])."
+    ),
 )
 @click.option("--no-footer", is_flag=True, help="Omit the generated-by footer.")
 def review(
@@ -114,7 +167,9 @@ def review(
     max_diff_chars: int | None,
     max_comment_chars: int | None,
     temperature: float,
-    max_tokens: int,
+    max_tokens: int | None,
+    excludes: tuple[str, ...],
+    comment_author: str | None,
     no_footer: bool,
 ) -> None:
     """Review TARGET, which is OWNER/REPO plus NUMBER or a pull request URL."""
@@ -146,15 +201,30 @@ def review(
     github_api_url = (
         _env("PR_LENS_GITHUB_API_URL", default=DEFAULT_GITHUB_API_URL) or DEFAULT_GITHUB_API_URL
     )
-    resolved_max_diff = max_diff_chars or _env_int("PR_LENS_MAX_DIFF_CHARS", DEFAULT_MAX_DIFF_CHARS)
-    resolved_max_comment = max_comment_chars or _env_int(
-        "PR_LENS_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS
+    resolved_max_diff = max_diff_chars or _env_int(
+        "PR_LENS_MAX_DIFF_CHARS",
+        DEFAULT_MAX_DIFF_CHARS,
+        min_value=MIN_MAX_DIFF_CHARS,
+        max_value=MAX_MAX_DIFF_CHARS,
     )
-    if resolved_max_comment > GITHUB_COMMENT_LIMIT:
-        raise click.ClickException(
-            f"PR_LENS_MAX_COMMENT_CHARS must not exceed {GITHUB_COMMENT_LIMIT}."
-        )
-
+    resolved_max_comment = max_comment_chars or _env_int(
+        "PR_LENS_MAX_COMMENT_CHARS",
+        DEFAULT_MAX_COMMENT_CHARS,
+        min_value=MIN_MAX_COMMENT_CHARS,
+        max_value=GITHUB_COMMENT_LIMIT,
+    )
+    resolved_max_tokens = max_tokens or _env_int(
+        "PR_LENS_MAX_TOKENS",
+        DEFAULT_MAX_TOKENS,
+        min_value=MIN_MAX_TOKENS,
+        max_value=MAX_MAX_TOKENS,
+    )
+    resolved_excludes = _excludes(excludes)
+    resolved_comment_author = (
+        comment_author
+        or _env("PR_LENS_COMMENT_AUTHOR", default=DEFAULT_COMMENT_AUTHOR)
+        or DEFAULT_COMMENT_AUTHOR
+    )
     try:
         with GitHubClient(
             token=github_token,
@@ -172,9 +242,41 @@ def review(
                     f"GitHub returned an empty diff for {repository}#{pr_number}."
                 )
 
+            filtered = filter_reviewable_files(diff_text, parsed, resolved_excludes)
+            if filtered.parsed.is_empty:
+                click.echo(
+                    "No reviewable files remained after exclusions; skipping LLM review.",
+                    err=True,
+                )
+                comment = format_no_review(
+                    pull_request,
+                    filtered.skipped_files,
+                    max_chars=resolved_max_comment,
+                    include_footer=not no_footer,
+                )
+                if output is not None:
+                    output.write_text(comment + "\n", encoding="utf-8")
+                    click.echo(f"Wrote review to {output}", err=True)
+                click.echo(comment)
+                if post:
+                    action, url = github.upsert_review_comment(
+                        repository,
+                        pr_number,
+                        comment,
+                        marker=PR_LENS_COMMENT_MARKER,
+                        expected_author=resolved_comment_author,
+                    )
+                    if url:
+                        click.echo(
+                            f"{action.capitalize()} review comment: {url}", err=True
+                        )
+                    else:
+                        click.echo(f"{action.capitalize()} review comment.", err=True)
+                return
+
             click.echo(
-                f"Reviewing {parsed.changed_files} file(s) "
-                f"({parsed.summary_line()}) with {resolved_model}...",
+                f"Reviewing {filtered.parsed.changed_files} of {parsed.changed_files} file(s) "
+                f"with {resolved_model}...",
                 err=True,
             )
             with LLMClient(
@@ -182,14 +284,15 @@ def review(
                 base_url=resolved_base_url,
                 model=resolved_model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=resolved_max_tokens,
             ) as llm:
                 result = review_diff(
                     pull_request,
-                    parsed,
-                    diff_text,
+                    filtered.parsed,
+                    filtered.diff_text,
                     llm,
                     max_diff_chars=resolved_max_diff,
+                    skipped_files=tuple(filtered.skipped_files),
                 )
 
             comment = format_review(
@@ -207,11 +310,17 @@ def review(
             click.echo(comment)
 
             if post:
-                url = github.post_comment(repository, pr_number, comment)
+                action, url = github.upsert_review_comment(
+                    repository,
+                    pr_number,
+                    comment,
+                    marker=PR_LENS_COMMENT_MARKER,
+                    expected_author=resolved_comment_author,
+                )
                 if url:
-                    click.echo(f"Posted review comment: {url}", err=True)
+                    click.echo(f"{action.capitalize()} review comment: {url}", err=True)
                 else:
-                    click.echo("Posted review comment.", err=True)
+                    click.echo(f"{action.capitalize()} review comment.", err=True)
     except (GitHubError, LLMError) as exc:
         raise click.ClickException(str(exc)) from exc
     except OSError as exc:
