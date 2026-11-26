@@ -929,7 +929,12 @@ def test_llm_complete_parses_response() -> None:
             200,
             json={
                 "model": "test-model-2024",
-                "choices": [{"message": {"content": "the review"}}],
+                "choices": [
+                    {
+                        "message": {"content": "the review"},
+                        "finish_reason": "stop",
+                    }
+                ],
                 "usage": {"prompt_tokens": 12, "completion_tokens": 5},
             },
         )
@@ -946,7 +951,7 @@ def test_llm_complete_parses_response() -> None:
     assert response.model == "test-model-2024"
     assert response.prompt_tokens == 12
     assert response.completion_tokens == 5
-    assert response.finish_reason is None
+    assert response.finish_reason == "stop"
 
 
 def test_llm_rejects_length_truncated_response() -> None:
@@ -991,6 +996,31 @@ def test_llm_rejects_max_tokens_truncated_response() -> None:
         client.complete("system", "user")
 
 
+@pytest.mark.parametrize(
+    ("finish_reason", "label"),
+    [
+        (None, "missing"),
+        ("content_filter", "content_filter"),
+        ("tool_calls", "tool_calls"),
+    ],
+)
+def test_llm_rejects_non_stop_finish_reasons(
+    finish_reason: str | None, label: str
+) -> None:
+    choice: dict[str, object] = {"message": {"content": "the review"}}
+    if finish_reason is not None:
+        choice["finish_reason"] = finish_reason
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [choice]})
+
+    with (
+        LLMClient("secret", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(LLMError, match="did not complete successfully"),
+    ):
+        client.complete("system", "user")
+
+
 def test_llm_accepts_stop_finish_reason() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -1017,8 +1047,12 @@ def test_llm_accepts_content_parts() -> None:
                 "choices": [
                     {
                         "message": {
-                            "content": [{"type": "text", "text": "part one "}, {"text": "two"}]
-                        }
+                            "content": [
+                                {"type": "text", "text": "part one "},
+                                {"text": "two"},
+                            ]
+                        },
+                        "finish_reason": "stop",
                     }
                 ]
             },
@@ -1052,7 +1086,11 @@ def test_llm_error_includes_provider_message() -> None:
 def _success_response() -> httpx.Response:
     return httpx.Response(
         200,
-        json={"choices": [{"message": {"content": "complete"}}]},
+        json={
+            "choices": [
+                {"message": {"content": "complete"}, "finish_reason": "stop"}
+            ]
+        },
     )
 
 
@@ -1215,7 +1253,14 @@ def test_llm_invalid_json_is_wrapped() -> None:
 
 def test_llm_empty_content_is_rejected() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"message": {"content": "  "}}]})
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "  "}, "finish_reason": "stop"}
+                ]
+            },
+        )
 
     with (
         LLMClient("secret", transport=httpx.MockTransport(handler)) as client,

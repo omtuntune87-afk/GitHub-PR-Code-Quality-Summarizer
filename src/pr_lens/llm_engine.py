@@ -312,6 +312,13 @@ class LLMClient:
                 "an incomplete review. Increase --max-tokens or "
                 "PR_LENS_MAX_TOKENS."
             )
+        if finish_reason != "stop":
+            reason = finish_reason if finish_reason is not None else "missing"
+            raise LLMError(
+                "LLM response did not complete successfully "
+                f"(finish_reason={reason!r}); refusing to present or post an "
+                "incomplete review. Expected 'stop'."
+            )
         if not content.strip():
             raise LLMError("LLM returned an empty response.")
         usage = data.get("usage") if isinstance(data, dict) else None
