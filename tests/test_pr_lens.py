@@ -15,6 +15,7 @@ from pr_lens.cli import cli as cli_command
 from pr_lens.diff_parser import parse_diff
 from pr_lens.formatter import (
     PR_LENS_COMMENT_MARKER,
+    _sanitize,
     format_no_review,
     format_review,
     truncate_comment,
@@ -703,6 +704,62 @@ def test_formatter_neutralizes_untrusted_html_mentions_and_markers(
     assert "@\u200beveryone" in comment
     assert "@\u200bmaintainers" in comment
     assert "## Summary" in comment
+
+
+def test_sanitize_preserves_valid_code_and_escapes_outside() -> None:
+    raw = (
+        "outside <img src=x> @alice\n\n"
+        "inline `if a < b && c > 0` and `@property` stay\n\n"
+        "```py\nif a < b && c > 0\n@property\n"
+        "<!-- pr-lens:review-comment -->\n```\n\n"
+        "after @bob <b>end</b>"
+    )
+
+    sanitized = _sanitize(raw)
+
+    assert "inline `if a < b && c > 0`" in sanitized
+    assert "`@property`" in sanitized
+    assert "```py\nif a < b && c > 0\n@property\n" in sanitized
+    assert "&lt;img" in sanitized
+    assert "@\u200balice" in sanitized
+    assert "@\u200bbob" in sanitized
+    assert "&lt;b&gt;end&lt;/b&gt;" in sanitized
+    assert PR_LENS_COMMENT_MARKER not in sanitized
+    assert "<!--\u200bpr-lens:review-comment -->" in sanitized
+
+
+def test_sanitize_escapes_unmatched_backticks() -> None:
+    sanitized = _sanitize("unmatched `if a < b && c > 0 @carol")
+
+    assert "&lt;" in sanitized
+    assert "&amp;" in sanitized
+    assert "@\u200bcarol" in sanitized
+
+
+def test_sanitize_preserves_nested_code_span() -> None:
+    sanitized = _sanitize("outer `` `x < y` and @dave `` tail @erin")
+
+    assert "`` `x < y` and @dave ``" in sanitized
+    assert "@\u200berin" in sanitized
+
+
+def test_truncated_review_closes_open_fence_and_keeps_sanitization(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    review_result.content = (
+        "intro @frank <img src=x>\n"
+        "```py\n"
+        "if a < b && c > 0\n"
+        + "line = 1\n" * 200
+    )
+
+    comment = format_review(review_result, pull_request, max_chars=500)
+
+    assert "Review truncated" in comment
+    assert "@\u200bfrank" in comment
+    assert "&lt;img" in comment
+    assert comment.count("```") == 2
+    assert comment.index("```\n\n---") < comment.index("Review truncated")
 
 
 def test_truncated_partial_review_keeps_safety_notice(

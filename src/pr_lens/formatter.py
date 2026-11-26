@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+from typing import Any
+
+from markdown_it import MarkdownIt
 
 from pr_lens.diff_parser import ParsedDiff
 from pr_lens.github_client import PullRequest
@@ -27,6 +30,165 @@ _RATING_ONLY_RE = re.compile(
     re.IGNORECASE,
 )
 
+_MARKDOWN = MarkdownIt()
+_ORIGINAL_BACKTICK_RULE = next(
+    rule.fn for rule in _MARKDOWN.inline.ruler.__rules__ if rule.name == "backticks"
+)
+
+
+def _record_backtick_positions(state: Any, silent: bool) -> bool:
+    start = state.pos
+    matched = _ORIGINAL_BACKTICK_RULE(state, silent)
+    if (
+        matched
+        and not silent
+        and state.tokens
+        and state.tokens[-1].type == "code_inline"
+    ):
+        state.tokens[-1].meta["start"] = start
+        state.tokens[-1].meta["end"] = state.pos
+    return matched
+
+
+_MARKDOWN.inline.ruler.at("backticks", _record_backtick_positions)
+
+
+def _line_start_offsets(text: str) -> list[int]:
+    starts = [0]
+    for match in re.finditer(r"\n", text):
+        starts.append(match.end())
+    return starts
+
+
+def _fence_ranges(text: str) -> list[tuple[int, int, str, bool]]:
+    lines = text.splitlines(keepends=True)
+    starts = _line_start_offsets(text)
+    ranges: list[tuple[int, int, str, bool]] = []
+    for token in _MARKDOWN.parse(text):
+        if token.type != "fence" or not token.map:
+            continue
+        start_line, end_line = token.map
+        if start_line >= len(lines):
+            continue
+        opening = re.match(r"([`~]{3,})", lines[start_line].lstrip())
+        if opening is None:
+            continue
+        marker = opening.group(1)
+        char = marker[0]
+        closed = False
+        close_marker = marker
+        if end_line > start_line + 1 and end_line - 1 < len(lines):
+            closing = lines[end_line - 1].strip()
+            if re.fullmatch(rf"{re.escape(char)}{{{len(marker)},}}", closing):
+                closed = True
+                close_marker = closing
+        start_offset = starts[start_line]
+        end_offset = starts[end_line] if end_line < len(starts) else len(text)
+        ranges.append((start_offset, end_offset, close_marker, closed))
+    return ranges
+
+
+def _absolute_inline_position(
+    marked: int,
+    content_lines: list[str],
+    content_starts: list[int],
+    bases: list[int],
+) -> int:
+    index = 0
+    for number, content_line in enumerate(content_lines):
+        index = number
+        if marked <= content_starts[number] + len(content_line):
+            break
+    return bases[index] + marked - content_starts[index]
+
+
+def _inline_code_ranges(text: str) -> list[tuple[int, int]]:
+    lines = text.splitlines(keepends=True)
+    starts = _line_start_offsets(text)
+    ranges: list[tuple[int, int]] = []
+    for token in _MARKDOWN.parse(text):
+        if token.type != "inline" or not token.map or not token.children:
+            continue
+        start_line, end_line = token.map
+        source_lines = lines[start_line:end_line]
+        content_lines = token.content.split("\n")
+        if len(source_lines) != len(content_lines):
+            continue
+        bases: list[int] = []
+        for index, (source_line, content_line) in enumerate(
+            zip(source_lines, content_lines, strict=False)
+        ):
+            relative = source_line.find(content_line)
+            if relative < 0:
+                bases = []
+                break
+            bases.append(starts[start_line + index] + relative)
+        if len(bases) != len(content_lines):
+            continue
+        content_starts: list[int] = []
+        position = 0
+        for content_line in content_lines:
+            content_starts.append(position)
+            position += len(content_line) + 1
+
+        for child in token.children:
+            if child.type != "code_inline":
+                continue
+            marked_start = child.meta.get("start")
+            marked_end = child.meta.get("end")
+            if isinstance(marked_start, int) and isinstance(marked_end, int):
+                ranges.append(
+                    (
+                        _absolute_inline_position(
+                            marked_start, content_lines, content_starts, bases
+                        ),
+                        _absolute_inline_position(
+                            marked_end, content_lines, content_starts, bases
+                        ),
+                    )
+                )
+    return ranges
+
+
+def _code_ranges(
+    text: str,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int, str, bool]]]:
+    fences = _fence_ranges(text)
+    inline = [
+        item
+        for item in _inline_code_ranges(text)
+        if not any(start <= item[0] and item[1] <= end for start, end, _, _ in fences)
+    ]
+    return inline, fences
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _truncate_body(text: str, cutoff: int, *, start: int = 0) -> str:
+    inline, fences = _code_ranges(text)
+    for code_start, code_end in inline:
+        if code_start < cutoff < code_end:
+            cutoff = max(start, code_start)
+            break
+    closing = next(
+        (
+            marker
+            for fence_start, fence_end, marker, _ in fences
+            if fence_start < cutoff < fence_end
+        ),
+        None,
+    )
+    body = text[:cutoff].rstrip()
+    return f"{body}\n{closing}" if closing else body
+
 
 def truncate_comment(
     text: str, max_chars: int, *, protected_prefix: str | None = None
@@ -43,7 +205,7 @@ def truncate_comment(
         cutoff = text.rfind("\n", 0, budget)
         if cutoff < budget // 2:
             cutoff = budget
-        return f"{text[:cutoff].rstrip()}{_TRUNCATION_NOTE}"
+        return f"{_truncate_body(text, cutoff)}{_TRUNCATION_NOTE}"
 
     prefix = protected_prefix.rstrip("\n")
     budget = max_chars - len(_TRUNCATION_NOTE)
@@ -52,7 +214,7 @@ def truncate_comment(
     cutoff = text.rfind("\n", len(prefix), budget)
     if cutoff <= len(prefix):
         cutoff = budget
-    return f"{text[:cutoff].rstrip()}{_TRUNCATION_NOTE}"
+    return f"{_truncate_body(text, cutoff, start=len(prefix))}{_TRUNCATION_NOTE}"
 
 
 def _compact_comment(status: str, max_chars: int) -> str:
@@ -60,15 +222,32 @@ def _compact_comment(status: str, max_chars: int) -> str:
     return f"{PR_LENS_COMMENT_MARKER}\n\n> **Review truncated.** {status}"[:max_chars]
 
 
-def _sanitize(value: str) -> str:
-    """Neutralize HTML and mentions in untrusted PR or model text."""
-    escaped = (
+def _escape_untrusted(value: str) -> str:
+    return (
         value.replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace("@", f"@{_ZERO_WIDTH_SPACE}")
     )
-    return escaped
+
+
+def _sanitize(value: str) -> str:
+    """Escape HTML and mentions outside valid Markdown code; keep code intact."""
+    inline, fences = _code_ranges(value)
+    protected = _merge_ranges(
+        inline + [(start, end) for start, end, _, closed in fences if closed]
+    )
+    chunks: list[str] = []
+    position = 0
+    for start, end in protected:
+        if start > position:
+            chunks.append(_escape_untrusted(value[position:start]))
+        chunks.append(value[start:end])
+        position = end
+    chunks.append(_escape_untrusted(value[position:]))
+    return "".join(chunks).replace(
+        PR_LENS_COMMENT_MARKER, f"<!--{_ZERO_WIDTH_SPACE}pr-lens:review-comment -->"
+    )
 
 
 def _safe_inline(value: str) -> str:
