@@ -535,7 +535,7 @@ def test_format_review_contains_metadata(
     assert "PR Lens review" in comment
     assert "> **Add a feature**" in comment
     assert "octo/demo#7" in comment
-    assert "@alice" in comment
+    assert "@\u200balice" in comment
     assert "`test-model`" in comment
     assert "1 file, +2 / -1 lines" in comment
     assert "## Summary" in comment
@@ -629,6 +629,61 @@ def test_format_review_truncates_long_comments(
     comment = format_review(review_result, pull_request, max_chars=1_000)
     assert len(comment) <= 1_000
     assert "Review truncated" in comment
+
+
+def test_formatter_neutralizes_untrusted_html_mentions_and_markers(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    fake_marker = "<!-- pr-lens:review-comment -->"
+    pull_request.title = f"Hello {fake_marker} <img src=x onerror=alert(1)> @everyone"
+    review_result.content = (
+        f"## Summary\nPlease ping @maintainers {fake_marker} <script>alert(2)</script>"
+    )
+
+    comment = format_review(review_result, pull_request)
+
+    assert comment.count(PR_LENS_COMMENT_MARKER) == 1
+    assert comment.startswith(PR_LENS_COMMENT_MARKER)
+    assert "<img" not in comment
+    assert "<script" not in comment
+    assert "&lt;img" in comment
+    assert "&lt;script" in comment
+    assert "@everyone" not in comment
+    assert "@\u200beveryone" in comment
+    assert "@\u200bmaintainers" in comment
+    assert "## Summary" in comment
+
+
+def test_truncated_partial_review_keeps_safety_notice(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    review_result.diff_truncated = True
+    review_result.quality = QualityEstimate("Looks good", 5, "Safe change.")
+    review_result.content = "word " * 10_000
+
+    comment = format_review(review_result, pull_request, max_chars=1_000)
+
+    assert len(comment) <= 1_000
+    assert comment.startswith(PR_LENS_COMMENT_MARKER)
+    assert comment.count(PR_LENS_COMMENT_MARKER) == 1
+    assert "**Partial review:**" in comment
+    assert "Not rated" in comment
+    assert "Review truncated" in comment
+    assert comment.rstrip().endswith("_")
+
+
+def test_formatter_compact_comment_keeps_marker_and_rating_notice(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    review_result.diff_truncated = True
+
+    comment = format_review(review_result, pull_request, max_chars=100)
+
+    assert len(comment) <= 100
+    assert comment.startswith(PR_LENS_COMMENT_MARKER)
+    assert "Review truncated" in comment
+    assert "Not rated" in comment
+    assert "score" not in comment
 
 
 def test_truncate_comment_with_tiny_budget() -> None:
