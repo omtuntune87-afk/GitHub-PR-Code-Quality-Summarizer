@@ -405,6 +405,27 @@ def test_filter_reviewable_files_honors_custom_excludes() -> None:
     assert filtered.skipped_files == ["new.txt"]
 
 
+def test_filter_reviewable_files_handles_diffs_without_git_headers() -> None:
+    diff = """\
+--- a/app.py
++++ b/app.py
+@@ -1 +1 @@
+-old = 1
++new = 2
+--- a/new.txt
++++ b/new.txt
+@@ -1 +1 @@
+-old
++new
+"""
+    filtered = filter_reviewable_files(diff, parse_diff(diff), ("new.txt",))
+
+    assert [file.path for file in filtered.parsed.files] == ["app.py"]
+    assert "app.py" in filtered.diff_text
+    assert "new.txt" not in filtered.diff_text
+    assert filtered.skipped_files == ["new.txt"]
+
+
 def test_filter_reviewable_files_returns_empty_when_all_files_excluded() -> None:
     parsed = parse_diff(NEW_FILE_DIFF)
     filtered = filter_reviewable_files(NEW_FILE_DIFF, parsed, ("new.txt",))
@@ -1723,3 +1744,20 @@ def test_cli_reports_llm_errors(
     result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
     assert result.exit_code == 1
     assert "model unavailable" in result.output
+
+
+def test_cli_does_not_present_or_post_truncated_review(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    github, llm = fake_clients
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_GITHUB_TOKEN", "github-key")
+    llm.next_error = LLMError("LLM response was truncated at the token limit")
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7", "--post"])
+    assert result.exit_code == 1
+    assert "truncated" in result.output
+    assert "## Summary" not in result.output
+    assert github.posted == []
+    assert github.updated == []

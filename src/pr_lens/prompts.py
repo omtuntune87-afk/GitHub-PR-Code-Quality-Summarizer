@@ -206,11 +206,13 @@ def _is_excluded(file: FileDiff, extra_patterns: tuple[str, ...]) -> bool:
 
 
 def _split_diff_blocks(diff_text: str) -> list[str]:
-    """Split a unified diff into one raw block per ``diff --git`` section."""
+    """Split a unified diff into one raw block per changed file."""
+    lines = diff_text.splitlines(keepends=True)
+    boundary = "diff --git " if any(line.startswith("diff --git ") for line in lines) else "--- "
     blocks: list[str] = []
     current: list[str] = []
-    for line in diff_text.splitlines(keepends=True):
-        if line.startswith("diff --git "):
+    for line in lines:
+        if line.startswith(boundary):
             if current:
                 blocks.append("".join(current))
             current = [line]
