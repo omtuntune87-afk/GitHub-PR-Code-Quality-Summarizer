@@ -67,8 +67,8 @@ over environment variables.
 Built-in exclusions cover common lockfiles (`package-lock.json`, `yarn.lock`,
 `Cargo.lock`, `poetry.lock`, `uv.lock`, and others), minified assets
 (`*.min.js`, `*.min.css`, source maps), and generated locations such as `dist/`,
-`build/`, `node_modules/`, `vendor/`, and `generated/**`. Files whose added
-lines contain `Code generated`, `DO NOT EDIT`, or `auto-generated` are also
+`build/`, `node_modules/`, `vendor/`, and `generated/**`. Files that begin with
+a generated-code header such as `// Code generated ... DO NOT EDIT` are also
 skipped. `PR_LENS_EXCLUDE` adds patterns; it does not disable the built-ins.
 
 GitHub tokens need `pull-requests: write` (or `issues: write` for the comment

@@ -196,11 +196,19 @@ def _is_excluded(file: FileDiff, extra_patterns: tuple[str, ...]) -> bool:
     if any(_matches_exclude(path, pattern) for path in paths for pattern in patterns):
         return True
 
-    generated_markers = ("code generated", "do not edit", "auto-generated")
-    for hunk in file.hunks:
-        for line in hunk.lines:
-            lowered = line.content.lower()
-            if line.kind == "addition" and any(marker in lowered for marker in generated_markers):
+    comment_prefixes = ("#", "//", "/*", "<!--", "--")
+    for hunk in file.hunks[:1]:
+        for line in hunk.lines[:10]:
+            stripped = line.content.strip()
+            lowered = stripped.lower()
+            generated_header = (
+                "code generated" in lowered or "auto-generated" in lowered
+            ) and "do not edit" in lowered
+            if (
+                line.kind == "addition"
+                and stripped.startswith(comment_prefixes)
+                and generated_header
+            ):
                 return True
     return False
 
