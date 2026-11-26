@@ -39,3 +39,4 @@ Thumbs.db
 
 # Local review output
 review.md
+*.log
