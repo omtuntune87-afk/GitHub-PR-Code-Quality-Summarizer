@@ -1,0 +1,46 @@
+name: PR review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-lens-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install pr-lens
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Review pull request
+        env:
+          PR_LENS_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_LENS_LLM_API_KEY: ${{ secrets.PR_LENS_LLM_API_KEY }}
+          PR_LENS_LLM_MODEL: ${{ vars.PR_LENS_LLM_MODEL || 'gpt-4o-mini' }}
+          PR_LENS_LLM_BASE_URL: ${{ vars.PR_LENS_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+        run: >-
+          pr-lens review
+          "${{ github.repository }}"
+          "${{ github.event.pull_request.number }}"
+          --post
