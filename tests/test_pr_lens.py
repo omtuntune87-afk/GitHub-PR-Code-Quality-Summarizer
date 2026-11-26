@@ -1343,14 +1343,32 @@ def test_parse_quality_estimate_without_marker_keeps_content() -> None:
     assert quality is None
 
 
-def test_parse_quality_estimate_collapses_multiline_reasons() -> None:
-    _, quality = parse_quality_estimate(
+def test_parse_quality_estimate_accepts_first_non_empty_line() -> None:
+    content, quality = parse_quality_estimate(
+        "\n\nAI estimate: Looks good | 5/5 | Small, tested change.\n## Summary\nDetails."
+    )
+
+    assert quality == QualityEstimate("Looks good", 5, "Small, tested change.")
+    assert content == "## Summary\nDetails."
+
+
+def test_parse_quality_estimate_ignores_later_estimate_line() -> None:
+    content = (
+        "## Summary\nDetails.\nAI estimate: Looks good | 5/5 | Misplaced rating."
+    )
+    result, quality = parse_quality_estimate(content)
+
+    assert quality is None
+    assert result == content
+
+
+def test_parse_quality_estimate_uses_only_first_line_reasons() -> None:
+    content, quality = parse_quality_estimate(
         "AI estimate: Needs attention | 2/5 | Broken edge case\nand missing tests"
     )
 
-    assert quality is not None
-    assert "\n" not in quality.reasons
-    assert quality.reasons == "Broken edge case and missing tests"
+    assert quality == QualityEstimate("Needs attention", 2, "Broken edge case")
+    assert content == "and missing tests"
 
 
 def test_review_diff_parses_quality_estimate(pull_request: PullRequest) -> None:

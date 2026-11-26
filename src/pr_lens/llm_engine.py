@@ -136,41 +136,35 @@ def _is_truncated(finish_reason: str | None) -> bool:
 
 
 def parse_quality_estimate(content: str) -> tuple[str, QualityEstimate | None]:
-    """Extract and validate the model's AI estimate line from review content."""
+    """Extract and validate an estimate only from the first non-empty line."""
     lines = content.splitlines()
-    for index, line in enumerate(lines):
-        probe = line.strip().lstrip("-* ").strip()
-        if not probe.lower().startswith("ai estimate:"):
-            continue
-        cleaned = "\n".join(lines[:index] + lines[index + 1 :]).strip()
-        match = _QUALITY_LINE_RE.match(probe)
-        if match is None:
-            return cleaned, None
+    first = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first is None:
+        return "", None
 
-        verdict_text = " ".join(match.group("verdict").split())
-        verdict = next(
-            (
-                allowed
-                for allowed in VALID_VERDICTS
-                if allowed.casefold() == verdict_text.casefold()
-            ),
-            None,
-        )
-        score = int(match.group("score"))
-        reason_lines = [match.group("reasons")]
-        end = index + 1
-        while end < len(lines):
-            following = lines[end].strip()
-            if not following or following.startswith("#"):
-                break
-            reason_lines.append(following)
-            end += 1
-        reasons = " ".join(" ".join(reason_lines).split())
-        if verdict is None or not 1 <= score <= 5 or not reasons:
-            return cleaned, None
-        cleaned = "\n".join(lines[:index] + lines[end:]).strip()
-        return cleaned, QualityEstimate(verdict=verdict, score=score, reasons=reasons[:300])
-    return content.strip(), None
+    probe = lines[first].strip().lstrip("-* ").strip()
+    if not probe.lower().startswith("ai estimate:"):
+        return content.strip(), None
+
+    cleaned = "\n".join(lines[:first] + lines[first + 1 :]).strip()
+    match = _QUALITY_LINE_RE.match(probe)
+    if match is None:
+        return cleaned, None
+
+    verdict_text = " ".join(match.group("verdict").split())
+    verdict = next(
+        (
+            allowed
+            for allowed in VALID_VERDICTS
+            if allowed.casefold() == verdict_text.casefold()
+        ),
+        None,
+    )
+    score = int(match.group("score"))
+    reasons = " ".join(match.group("reasons").split())
+    if verdict is None or not 1 <= score <= 5 or not reasons:
+        return cleaned, None
+    return cleaned, QualityEstimate(verdict=verdict, score=score, reasons=reasons[:300])
 
 
 def _parse_retry_after(value: str) -> float | None:
