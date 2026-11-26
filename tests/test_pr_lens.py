@@ -22,6 +22,8 @@ from pr_lens.github_client import (
     parse_pr_reference,
 )
 from pr_lens.llm_engine import (
+    DEFAULT_LLM_BASE_URL,
+    DEFAULT_LLM_MODEL,
     LLMClient,
     LLMError,
     LLMResponse,
@@ -1466,6 +1468,21 @@ def test_cli_accepts_pull_request_url(
     result = CliRunner().invoke(cli_command, ["review", "https://github.com/octo/demo/pull/7"])
     assert result.exit_code == 0, result.output
     assert "octo/demo#7" in result.output
+
+
+def test_cli_uses_gemini_defaults(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, llm = fake_clients
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
+    assert result.exit_code == 0, result.output
+    assert llm.model == DEFAULT_LLM_MODEL
+    assert llm.base_url == DEFAULT_LLM_BASE_URL
+    assert DEFAULT_LLM_BASE_URL == "https://generativelanguage.googleapis.com/v1beta/openai/"
+    assert DEFAULT_LLM_MODEL == "gemini-3.5-flash-lite"
 
 
 def test_cli_uses_model_and_base_url_env(

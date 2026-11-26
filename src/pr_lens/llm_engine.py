@@ -15,8 +15,8 @@ from pr_lens.diff_parser import ParsedDiff
 from pr_lens.github_client import PullRequest
 from pr_lens.prompts import PromptBundle, build_prompt_bundle
 
-DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_LLM_MODEL = "gpt-4o-mini"
+DEFAULT_LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+DEFAULT_LLM_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_MAX_TOKENS = 2_000
 
 
