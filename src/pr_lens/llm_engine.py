@@ -11,7 +11,7 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 
-from pr_lens.diff_parser import ParsedDiff
+from pr_lens.diff_parser import FileDiff, ParsedDiff
 from pr_lens.github_client import PullRequest
 from pr_lens.prompts import PromptBundle, build_prompt_bundle
 
@@ -58,7 +58,17 @@ class ReviewResult:
     completion_tokens: int | None = None
     diff_truncated: bool = False
     skipped_files: list[str] = field(default_factory=list)
+    unreviewable_files: list[str] = field(default_factory=list)
     quality: QualityEstimate | None = None
+
+    @property
+    def is_partial(self) -> bool:
+        """Whether any reviewable content was unavailable to the model."""
+        return (
+            self.diff_truncated
+            or bool(self.skipped_files)
+            or bool(self.unreviewable_files)
+        )
 
 
 VALID_VERDICTS = ("Looks good", "Needs attention", "High risk")
@@ -333,6 +343,13 @@ class LLMClient:
         )
 
 
+def _has_reviewable_text(file: FileDiff) -> bool:
+    """Return whether a changed file has text the model could actually review."""
+    if file.is_binary:
+        return False
+    return any(line.content.strip() for hunk in file.hunks for line in hunk.lines)
+
+
 def review_diff(
     pull_request: PullRequest,
     parsed: ParsedDiff,
@@ -354,6 +371,9 @@ def review_diff(
     )
     response = client.complete(bundle.system, bundle.user)
     content, quality = parse_quality_estimate(response.content)
+    unreviewable_files = [
+        file.display_path for file in parsed.files if not _has_reviewable_text(file)
+    ]
     return ReviewResult(
         content=content,
         model=response.model,
@@ -361,5 +381,6 @@ def review_diff(
         completion_tokens=response.completion_tokens,
         diff_truncated=bundle.truncated,
         skipped_files=list(skipped_files),
+        unreviewable_files=unreviewable_files,
         quality=quality,
     )

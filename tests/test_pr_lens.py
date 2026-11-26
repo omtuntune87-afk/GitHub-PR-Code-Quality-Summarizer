@@ -564,6 +564,31 @@ def test_format_review_notes_skipped_files(
     assert "`static/app.min.js`" in comment
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("diff_truncated", True),
+        ("skipped_files", ["package-lock.json"]),
+        ("unreviewable_files", ["logo.png"]),
+    ],
+)
+def test_partial_review_never_shows_positive_rating(
+    review_result: ReviewResult,
+    pull_request: PullRequest,
+    field: str,
+    value: object,
+) -> None:
+    review_result.quality = QualityEstimate("Looks good", 5, "Small, tested change.")
+    setattr(review_result, field, value)
+
+    comment = format_review(review_result, pull_request)
+
+    assert "**Partial review:**" in comment
+    assert "Not rated" in comment
+    assert "Looks good" not in comment
+    assert "score 5/5" not in comment
+
+
 def test_format_review_handles_empty_content(
     review_result: ReviewResult, pull_request: PullRequest
 ) -> None:
@@ -1307,6 +1332,29 @@ def test_review_diff_uses_bundle_and_returns_result(pull_request: PullRequest) -
     assert result.diff_truncated is True
     assert "Add a feature" in client.user
     assert "untrusted data" in client.system
+
+
+def test_review_diff_marks_unreviewable_files(pull_request: PullRequest) -> None:
+    binary_diff = (
+        "diff --git a/logo.png b/logo.png\n"
+        "index 1111111..2222222 100644\n"
+        "Binary files a/logo.png and b/logo.png differ\n"
+    )
+    combined = SIMPLE_DIFF + binary_diff
+
+    class CapturingClient:
+        def complete(self, system: str, user: str) -> LLMResponse:
+            return LLMResponse(content="## Summary\nFine.", model="captured-model")
+
+    result = review_diff(
+        pull_request,
+        parse_diff(combined),
+        combined,
+        CapturingClient(),  # type: ignore[arg-type]
+    )
+
+    assert result.unreviewable_files == ["logo.png"]
+    assert result.is_partial is True
 
 
 def test_review_diff_carries_skipped_files(pull_request: PullRequest) -> None:

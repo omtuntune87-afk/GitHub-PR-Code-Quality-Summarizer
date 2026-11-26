@@ -73,8 +73,28 @@ def format_review(
             f"\u00b7 {stats}"
         ),
     ]
+    if result.is_partial:
+        reasons: list[str] = []
+        if result.diff_truncated:
+            reasons.append("the diff was truncated")
+        if result.skipped_files:
+            reasons.append(f"{len(result.skipped_files)} file(s) were excluded")
+        if result.unreviewable_files:
+            reasons.append(
+                f"{len(result.unreviewable_files)} file(s) had no reviewable text"
+            )
+        lines.extend(
+            [
+                "",
+                "> [!WARNING]",
+                f"> **Partial review:** {', '.join(reasons)}.",
+            ]
+        )
+
     lines.extend(["", "> **AI estimate:**"])
-    if result.quality is not None:
+    if result.is_partial:
+        lines.append("> Not rated (partial review; ratings are disabled).")
+    elif result.quality is not None:
         quality: QualityEstimate = result.quality
         lines.append(f"> {quality.verdict} · score {quality.score}/5")
         lines.append(f"> Reasons: {quality.reasons.replace('`', "'")}")
@@ -95,6 +115,15 @@ def format_review(
         for path in result.skipped_files[:20]:
             lines.append(f"> - `{path.replace('`', "'")}`")
         remaining = len(result.skipped_files) - 20
+        if remaining > 0:
+            lines.append(f"> - ...and {remaining} more file(s)")
+    if result.unreviewable_files:
+        lines.extend(
+            ["", "> [!NOTE]", "> Files without reviewable text (not reviewed):"]
+        )
+        for path in result.unreviewable_files[:20]:
+            lines.append(f"> - `{path.replace('`', "'")}`")
+        remaining = len(result.unreviewable_files) - 20
         if remaining > 0:
             lines.append(f"> - ...and {remaining} more file(s)")
     lines.extend(["", "---", "", content])
