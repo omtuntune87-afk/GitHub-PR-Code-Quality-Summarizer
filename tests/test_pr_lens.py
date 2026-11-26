@@ -152,6 +152,19 @@ def test_version_is_exposed() -> None:
     assert __version__ == "0.1.0"
 
 
+def test_mit_license_file_matches_package_metadata() -> None:
+    root = Path(__file__).resolve().parents[1]
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    if 'license = { text = "MIT" }' not in pyproject:
+        pytest.skip("Package metadata does not declare MIT.")
+
+    license_text = (root / "LICENSE").read_text(encoding="utf-8")
+
+    assert "MIT License" in license_text
+    assert "Copyright (c) 2026 Om Tuntune" in license_text
+    assert "Permission is hereby granted, free of charge" in license_text
+
+
 # ---------------------------------------------------------------------------
 # Diff parser
 # ---------------------------------------------------------------------------
