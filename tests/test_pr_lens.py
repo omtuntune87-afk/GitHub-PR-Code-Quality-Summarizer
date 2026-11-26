@@ -1585,6 +1585,108 @@ def test_format_review_shows_not_rated(
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def http_clients(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Run the real CLI clients against in-memory HTTP responses."""
+    state: dict[str, object] = {
+        "diff": SIMPLE_DIFF,
+        "comments": [],
+        "llm_calls": 0,
+        "llm_status": 200,
+        "llm_payload": {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "AI estimate: Looks good | 5/5 | Small, tested change.\n\n"
+                            "## Summary\nA small, tested change."
+                        )
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+        "posted": [],
+        "patched": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith("https://llm.test/v1/chat/completions"):
+            state["llm_calls"] = int(state["llm_calls"]) + 1
+            return httpx.Response(
+                int(state["llm_status"]), json=state["llm_payload"]
+            )
+        if url == "https://api.github.com/repos/octo/demo/pulls/7":
+            if request.headers.get("Accept") == "application/vnd.github.v3.diff":
+                return httpx.Response(200, text=str(state["diff"]))
+            return httpx.Response(
+                200,
+                json={
+                    "number": 7,
+                    "title": "Add a feature",
+                    "body": "Body",
+                    "user": {"login": "alice"},
+                    "state": "open",
+                    "base": {"ref": "main"},
+                    "head": {"ref": "feature"},
+                    "html_url": "https://github.com/octo/demo/pull/7",
+                    "draft": False,
+                    "additions": 2,
+                    "deletions": 1,
+                    "changed_files": 1,
+                },
+            )
+        if url == "https://api.github.com/repos/octo/demo/pulls/7.diff":
+            return httpx.Response(200, text=str(state["diff"]))
+        if url.startswith(
+            "https://api.github.com/repos/octo/demo/issues/7/comments"
+        ):
+            if request.method == "GET":
+                return httpx.Response(200, json=state["comments"])
+            body = json.loads(request.content)["body"]
+            posted = state["posted"]
+            assert isinstance(posted, list)
+            posted.append(body)
+            return httpx.Response(
+                201, json={"html_url": "https://github.com/comment/1"}
+            )
+        if url.startswith(
+            "https://api.github.com/repos/octo/demo/issues/comments/"
+        ) and request.method == "PATCH":
+            body = json.loads(request.content)["body"]
+            patched = state["patched"]
+            assert isinstance(patched, list)
+            patched.append(body)
+            return httpx.Response(
+                200, json={"html_url": "https://github.com/comment/99"}
+            )
+        raise AssertionError(f"Unexpected mocked request: {request.method} {url}")
+
+    transport = httpx.MockTransport(handler)
+
+    def github_factory(token: str | None = None, *, api_url: str | None = None) -> GitHubClient:
+        return GitHubClient(
+            token=token,
+            api_url=api_url or "https://api.github.com",
+            transport=transport,
+        )
+
+    def llm_factory(api_key: str, **kwargs: object) -> LLMClient:
+        kwargs.pop("base_url", None)
+        return LLMClient(
+            api_key,
+            base_url="https://llm.test/v1",
+            transport=transport,
+            retry_sleep=lambda _: None,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    monkeypatch.setattr(cli_module, "GitHubClient", github_factory)
+    monkeypatch.setattr(cli_module, "LLMClient", llm_factory)
+    return state
+
+
 class FakeGitHubClient:
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.token = kwargs.get("token")
@@ -1717,6 +1819,125 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "PR_LENS_EXCLUDE",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def test_e2e_cli_preview_review(
+    http_clients: dict[str, object],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
+
+    assert result.exit_code == 0, result.output
+    assert PR_LENS_COMMENT_MARKER in result.output
+    assert "Looks good · score 5/5" in result.output
+    assert http_clients["llm_calls"] == 1
+    assert http_clients["posted"] == []
+    assert http_clients["patched"] == []
+
+
+def test_e2e_cli_posts_review(
+    http_clients: dict[str, object],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_GITHUB_TOKEN", "github-key")
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7", "--post"])
+
+    assert result.exit_code == 0, result.output
+    assert "Created review comment" in result.output
+    assert len(list(http_clients["posted"])) == 1
+    assert http_clients["patched"] == []
+
+
+def test_e2e_cli_updates_existing_review(
+    http_clients: dict[str, object],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_GITHUB_TOKEN", "github-key")
+    http_clients["comments"] = [
+        {
+            "id": 99,
+            "body": f"old\n{PR_LENS_COMMENT_MARKER}",
+            "user": {"login": "github-actions[bot]"},
+        }
+    ]
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7", "--post"])
+
+    assert result.exit_code == 0, result.output
+    assert "Updated review comment" in result.output
+    assert len(list(http_clients["patched"])) == 1
+    assert http_clients["posted"] == []
+
+
+def test_e2e_cli_llm_failure_posts_nothing(
+    http_clients: dict[str, object],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_GITHUB_TOKEN", "github-key")
+    http_clients["llm_status"] = 429
+    http_clients["llm_payload"] = {"error": {"message": "model unavailable"}}
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7", "--post"])
+
+    assert result.exit_code == 1
+    assert "model unavailable" in result.output
+    assert PR_LENS_COMMENT_MARKER not in result.output
+    assert http_clients["posted"] == []
+    assert http_clients["patched"] == []
+
+
+def test_e2e_cli_all_files_skipped(
+    http_clients: dict[str, object],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("PR_LENS_GITHUB_TOKEN", "github-key")
+    http_clients["diff"] = NEW_FILE_DIFF
+    http_clients["comments"] = [
+        {
+            "id": 99,
+            "body": f"old rating: 5/5\n{PR_LENS_COMMENT_MARKER}",
+            "user": {"login": "github-actions[bot]"},
+        }
+    ]
+    result = CliRunner().invoke(
+        cli_command,
+        ["review", "octo/demo", "7", "--post", "--exclude", "new.txt"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing was reviewed" in result.output
+    assert "Not rated" in result.output
+    assert "score" not in result.output
+    assert http_clients["llm_calls"] == 0
+    assert len(list(http_clients["patched"])) == 1
+    assert "Nothing was reviewed" in list(http_clients["patched"])[0]
+    assert "score" not in list(http_clients["patched"])[0]
+
+
+def test_e2e_cli_partial_review_has_no_positive_rating(
+    http_clients: dict[str, object],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    result = CliRunner().invoke(
+        cli_command, ["review", "octo/demo", "7", "--max-diff-chars", "100"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "**Partial review:**" in result.output
+    assert "Not rated" in result.output
+    assert "Looks good" not in result.output
+    assert "score 5/5" not in result.output
+    assert http_clients["llm_calls"] == 1
 
 
 def test_cli_review_prints_markdown(
