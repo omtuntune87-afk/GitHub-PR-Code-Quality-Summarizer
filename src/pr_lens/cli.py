@@ -36,6 +36,9 @@ from pr_lens.llm_engine import (
 from pr_lens.prompts import DEFAULT_MAX_DIFF_CHARS, filter_reviewable_files
 
 GITHUB_COMMENT_LIMIT = 65_000
+MIN_MAX_DIFF_CHARS = 100
+MAX_MAX_DIFF_CHARS = 2_000_000
+MIN_MAX_COMMENT_CHARS = 100
 
 
 def _env(primary: str, *fallbacks: str, default: str | None = None) -> str | None:
@@ -103,15 +106,22 @@ def cli() -> None:
 )
 @click.option(
     "--max-diff-chars",
-    type=click.IntRange(min=100, max=2_000_000),
+    type=click.IntRange(min=MIN_MAX_DIFF_CHARS, max=MAX_MAX_DIFF_CHARS),
     default=None,
-    help="Maximum diff characters sent to the model (env: PR_LENS_MAX_DIFF_CHARS).",
+    help=(
+        "Maximum diff characters sent to the model "
+        f"({MIN_MAX_DIFF_CHARS}-{MAX_MAX_DIFF_CHARS}; env: PR_LENS_MAX_DIFF_CHARS)."
+    ),
 )
 @click.option(
     "--max-comment-chars",
-    type=click.IntRange(min=100, max=GITHUB_COMMENT_LIMIT),
+    type=click.IntRange(min=MIN_MAX_COMMENT_CHARS, max=GITHUB_COMMENT_LIMIT),
     default=None,
-    help="Maximum comment length (env: PR_LENS_MAX_COMMENT_CHARS).",
+    help=(
+        "Maximum comment length "
+        f"({MIN_MAX_COMMENT_CHARS}-{GITHUB_COMMENT_LIMIT}; "
+        "env: PR_LENS_MAX_COMMENT_CHARS)."
+    ),
 )
 @click.option(
     "--temperature",
@@ -191,9 +201,17 @@ def review(
     github_api_url = (
         _env("PR_LENS_GITHUB_API_URL", default=DEFAULT_GITHUB_API_URL) or DEFAULT_GITHUB_API_URL
     )
-    resolved_max_diff = max_diff_chars or _env_int("PR_LENS_MAX_DIFF_CHARS", DEFAULT_MAX_DIFF_CHARS)
+    resolved_max_diff = max_diff_chars or _env_int(
+        "PR_LENS_MAX_DIFF_CHARS",
+        DEFAULT_MAX_DIFF_CHARS,
+        min_value=MIN_MAX_DIFF_CHARS,
+        max_value=MAX_MAX_DIFF_CHARS,
+    )
     resolved_max_comment = max_comment_chars or _env_int(
-        "PR_LENS_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS
+        "PR_LENS_MAX_COMMENT_CHARS",
+        DEFAULT_MAX_COMMENT_CHARS,
+        min_value=MIN_MAX_COMMENT_CHARS,
+        max_value=GITHUB_COMMENT_LIMIT,
     )
     resolved_max_tokens = max_tokens or _env_int(
         "PR_LENS_MAX_TOKENS",
@@ -207,11 +225,6 @@ def review(
         or _env("PR_LENS_COMMENT_AUTHOR", default=DEFAULT_COMMENT_AUTHOR)
         or DEFAULT_COMMENT_AUTHOR
     )
-    if resolved_max_comment > GITHUB_COMMENT_LIMIT:
-        raise click.ClickException(
-            f"PR_LENS_MAX_COMMENT_CHARS must not exceed {GITHUB_COMMENT_LIMIT}."
-        )
-
     try:
         with GitHubClient(
             token=github_token,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from pr_lens.diff_parser import ParsedDiff
 from pr_lens.github_client import PullRequest
 from pr_lens.llm_engine import QualityEstimate, ReviewResult
@@ -11,6 +13,13 @@ PR_LENS_COMMENT_MARKER = "<!-- pr-lens:review-comment -->"
 _TRUNCATION_NOTE = "\n\n---\n\n_Review truncated because it exceeded the configured comment limit._"
 _MIN_COMMENT_CHARS = 120
 _ZERO_WIDTH_SPACE = "\u200b"
+_ESTIMATE_PREFIX_RE = re.compile(r"^\s*(?:[-*]\s*)?ai\s*estimate\s*:", re.IGNORECASE)
+_VERDICT_RE = re.compile(
+    r"\b(?:looks good|needs attention|high risk)\b", re.IGNORECASE
+)
+_SCORE_RE = re.compile(
+    r"\b(?:[1-5]\s*/\s*5|score\s*:?\s*[1-5])\b", re.IGNORECASE
+)
 
 
 def truncate_comment(
@@ -61,6 +70,20 @@ def _safe_inline(value: str) -> str:
     return f"`{_sanitize(value).replace('`', "'")}`"
 
 
+def _remove_rating_lines(content: str) -> str:
+    """Drop model lines that repeat a rating in a partial review."""
+    kept = [
+        line
+        for line in content.splitlines()
+        if not (
+            _ESTIMATE_PREFIX_RE.match(line)
+            or _VERDICT_RE.search(line)
+            or _SCORE_RE.search(line)
+        )
+    ]
+    return "\n".join(kept).strip()
+
+
 def _one_line(value: str, limit: int = 200) -> str:
     collapsed = " ".join(value.split())
     if not collapsed:
@@ -98,9 +121,12 @@ def format_review(
         return _compact_comment(status, max_chars)
 
     stats = _stats(pull_request, parsed)
-    content = _sanitize(
-        result.content.strip() or "The model returned an empty review."
-    )
+    content = result.content.strip() or "The model returned an empty review."
+    if result.is_partial:
+        content = _remove_rating_lines(content) or (
+            "The model returned no usable review text after rating removal."
+        )
+    content = _sanitize(content)
 
     lines = [
         PR_LENS_COMMENT_MARKER,

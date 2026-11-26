@@ -80,8 +80,8 @@ priority over environment variables, which take priority over built-in defaults.
 | `PR_LENS_LLM_BASE_URL` | No | `https://generativelanguage.googleapis.com/v1beta/openai/` | OpenAI-compatible API base URL |
 | `PR_LENS_LLM_MODEL` | No | `gemini-3.5-flash-lite` | Model name |
 | `PR_LENS_MAX_TOKENS` | No | `4000` | Maximum response tokens; valid range 1-100000 |
-| `PR_LENS_MAX_DIFF_CHARS` | No | `60000` | Maximum diff characters sent to the model |
-| `PR_LENS_MAX_COMMENT_CHARS` | No | `60000` | Maximum comment length; hard cap 65000 |
+| `PR_LENS_MAX_DIFF_CHARS` | No | `60000` | Maximum diff characters sent to the model; valid range 100-2000000 |
+| `PR_LENS_MAX_COMMENT_CHARS` | No | `60000` | Maximum comment length; valid range 100-65000 |
 | `PR_LENS_EXCLUDE` | No | empty | Comma-separated additional file glob patterns |
 | `PR_LENS_COMMENT_AUTHOR` | For idempotent posting | `github-actions[bot]` | Account allowed to own an existing pr-lens comment |
 
@@ -203,7 +203,8 @@ the following occurs:
 - a changed file had no reviewable text, such as a binary file.
 
 Even if the model returns a positive estimate, a partial review never displays
-or posts that rating.
+or posts that rating. Rating-like lines repeated in the model's prose are also
+removed from partial comments; the rest of the review text is preserved.
 
 If all changed files are excluded, `pr-lens` skips the LLM call and emits a
 **Nothing was reviewed** comment with **Not rated** and no score. With `--post`,

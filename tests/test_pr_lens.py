@@ -608,6 +608,27 @@ def test_partial_review_never_shows_positive_rating(
     assert "score 5/5" not in comment
 
 
+def test_partial_review_removes_repeated_rating_lines_from_content(
+    review_result: ReviewResult, pull_request: PullRequest
+) -> None:
+    review_result.diff_truncated = True
+    review_result.quality = QualityEstimate("Looks good", 5, "Small, tested change.")
+    review_result.content = (
+        "## Summary\n"
+        "Looks good · score 5/5\n"
+        "AI estimate: Looks good | 5/5 | Repeated.\n"
+        "Still useful text."
+    )
+
+    comment = format_review(review_result, pull_request)
+
+    assert "**Partial review:**" in comment
+    assert "Not rated" in comment
+    assert "Looks good" not in comment
+    assert "5/5" not in comment
+    assert "Still useful text." in comment
+
+
 def test_format_no_review_has_no_rating(pull_request: PullRequest) -> None:
     comment = format_no_review(pull_request, ["new.txt", "package-lock.json"])
 
@@ -2139,6 +2160,30 @@ def test_cli_rejects_out_of_range_max_tokens_env(
     result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
     assert result.exit_code == 1
     assert "PR_LENS_MAX_TOKENS" in result.output
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("PR_LENS_MAX_DIFF_CHARS", "99"),
+        ("PR_LENS_MAX_DIFF_CHARS", "2000001"),
+        ("PR_LENS_MAX_COMMENT_CHARS", "99"),
+        ("PR_LENS_MAX_COMMENT_CHARS", "65001"),
+    ],
+)
+def test_cli_rejects_out_of_range_size_envs(
+    fake_clients: tuple[FakeGitHubClient, FakeLLMClient],
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    del fake_clients
+    monkeypatch.setenv("PR_LENS_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv(name, value)
+    result = CliRunner().invoke(cli_command, ["review", "octo/demo", "7"])
+    assert result.exit_code == 1
+    assert name in result.output
 
 
 def test_cli_rejects_invalid_max_tokens_env(
